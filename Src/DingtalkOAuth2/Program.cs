@@ -19,11 +19,11 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 
-app.MapGet("/", (HttpRequest request) => Results.Ok(new
+app.MapGet("/", (HttpRequest request, IOptions<OAuth2BridgeOptions> options) => Results.Ok(new
 {
     service = "dingtalk-oauth2",
-    issuer = ResolveIssuer(request),
-    metadata = $"{ResolveIssuer(request)}/.well-known/oauth-authorization-server"
+    issuer = ResolveIssuer(request, options.Value),
+    metadata = $"{ResolveIssuer(request, options.Value)}/.well-known/oauth-authorization-server"
 }));
 
 app.MapGet("/.well-known/oauth-authorization-server", BuildAuthorizationServerMetadata);
@@ -168,9 +168,9 @@ app.MapGet("/userinfo", async (
 
 app.Run();
 
-static IResult BuildAuthorizationServerMetadata(HttpRequest request)
+static IResult BuildAuthorizationServerMetadata(HttpRequest request, IOptions<OAuth2BridgeOptions> options)
 {
-    var issuer = ResolveIssuer(request);
+    var issuer = ResolveIssuer(request, options.Value);
     return Results.Ok(new
     {
         issuer,
@@ -290,14 +290,23 @@ static (string Username, string Password) ReadBasicCredentials(HttpRequest reque
 static string FirstNonEmpty(params string?[] values) =>
     values.FirstOrDefault(static value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 
-static string ResolveIssuer(HttpRequest request) =>
-    $"{request.Scheme}://{request.Host}".TrimEnd('/');
-
-sealed class OAuth2BridgeOptions
+static string ResolveIssuer(HttpRequest request, OAuth2BridgeOptions options)
 {
-    public string AuthorizeEndpoint { get; set; } = "https://login.dingtalk.com/oauth2/auth";
+    var configuredPrefix = options.PublicEndpointPrefix?.Trim();
+    if (Uri.TryCreate(configuredPrefix, UriKind.Absolute, out var absolutePrefix) &&
+        !string.IsNullOrWhiteSpace(absolutePrefix.Scheme) &&
+        !string.IsNullOrWhiteSpace(absolutePrefix.Host))
+    {
+        return absolutePrefix.GetLeftPart(UriPartial.Path).TrimEnd('/');
+    }
 
-    public string DingTalkScope { get; set; } = "openid";
+    var requestOrigin = $"{request.Scheme}://{request.Host}";
+    if (!string.IsNullOrWhiteSpace(configuredPrefix) && configuredPrefix.StartsWith('/'))
+    {
+        return $"{requestOrigin}{configuredPrefix}".TrimEnd('/');
+    }
+
+    return $"{requestOrigin}{request.PathBase}".TrimEnd('/');
 }
 
 sealed class DingTalkOAuthClient(ILogger<DingTalkOAuthClient> logger)

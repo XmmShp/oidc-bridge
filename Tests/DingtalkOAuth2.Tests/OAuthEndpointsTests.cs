@@ -35,6 +35,42 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
     }
 
     [Fact]
+    public async Task Discovery_UsesConfiguredAbsolutePublicEndpointPrefix()
+    {
+        using var prefixedFactory = factory.WithPublicEndpointPrefix("https://auth.example.com/dingtalk");
+        using var client = prefixedFactory.CreateClient();
+
+        using var response = await client.GetAsync("/.well-known/oauth-authorization-server");
+
+        response.EnsureSuccessStatusCode();
+        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = body.RootElement;
+
+        Assert.Equal("https://auth.example.com/dingtalk", root.GetProperty("issuer").GetString());
+        Assert.Equal("https://auth.example.com/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/dingtalk/token", root.GetProperty("token_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
+    }
+
+    [Fact]
+    public async Task Discovery_UsesConfiguredRelativePublicEndpointPrefix()
+    {
+        using var prefixedFactory = factory.WithPublicEndpointPrefix("/oauth/dingtalk/");
+        using var client = prefixedFactory.CreateClient();
+
+        using var response = await client.GetAsync("/.well-known/oauth-authorization-server");
+
+        response.EnsureSuccessStatusCode();
+        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = body.RootElement;
+
+        Assert.Equal("http://localhost/oauth/dingtalk", root.GetProperty("issuer").GetString());
+        Assert.Equal("http://localhost/oauth/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
+        Assert.Equal("http://localhost/oauth/dingtalk/token", root.GetProperty("token_endpoint").GetString());
+        Assert.Equal("http://localhost/oauth/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
+    }
+
+    [Fact]
     public async Task Authorize_RedirectsToDingTalkWithStandardParameters()
     {
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
@@ -174,12 +210,27 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
 
 public sealed class OAuthBridgeFactory : WebApplicationFactory<Program>
 {
+    private readonly string? _publicEndpointPrefix;
+
+    public OAuthBridgeFactory()
+    {
+    }
+
+    private OAuthBridgeFactory(string publicEndpointPrefix)
+    {
+        _publicEndpointPrefix = publicEndpointPrefix;
+    }
+
+    public OAuthBridgeFactory WithPublicEndpointPrefix(string publicEndpointPrefix) =>
+        new(publicEndpointPrefix);
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration(configuration =>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
+                ["OAuth2Bridge:PublicEndpointPrefix"] = _publicEndpointPrefix,
                 ["OAuth2Bridge:AuthorizeEndpoint"] = "https://login.dingtalk.test/oauth2/auth",
                 ["OAuth2Bridge:DingTalkScope"] = "openid"
             });

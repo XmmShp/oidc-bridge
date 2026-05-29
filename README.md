@@ -38,6 +38,7 @@ Configure `OAuth2Bridge` in `appsettings.json` or environment variables:
 ```json
 {
   "OAuth2Bridge": {
+    "PublicEndpointPrefix": "",
     "AuthorizeEndpoint": "https://login.dingtalk.com/oauth2/auth",
     "DingTalkScope": "openid"
   }
@@ -46,7 +47,7 @@ Configure `OAuth2Bridge` in `appsettings.json` or environment variables:
 
 DingTalk `AppKey` and `AppSecret` are not configured in this service. Configure them as the upstream OAuth client's `client_id` and `client_secret`; the bridge passes them to DingTalk unchanged.
 
-`issuer` in the discovery document is generated from the incoming request host. There is no issuer configuration item.
+`PublicEndpointPrefix` is optional. Use it when the service is exposed behind a reverse proxy or path prefix. It accepts either an absolute prefix such as `https://auth.example.com/dingtalk` or a relative prefix such as `/dingtalk`. If it is empty or invalid, `issuer` and endpoint URLs in the discovery document fall back to the incoming request host and path base.
 
 ## Keycloak Notes
 
