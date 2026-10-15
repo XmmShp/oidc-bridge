@@ -50,7 +50,7 @@ There is no bridge callback or independent client registration. Register the dow
 
 ### Platform differences
 
-- **DingTalk:** calls `POST /v1.0/oauth2/userAccessToken` with camelCase JSON fields and `GET /v1.0/contact/users/me` with the `x-acs-dingtalk-access-token` header. The authorization request supplies `scope`, defaulting to `openid` when omitted. PKCE authorization requests are rejected because this adapter does not support PKCE.
+- **DingTalk:** calls `POST /v1.0/oauth2/userAccessToken` with camelCase JSON fields and `GET /v1.0/contact/users/me` with the `x-acs-dingtalk-access-token` header. Authorization redirects always include `prompt=consent`. The authorization request supplies `scope`, defaulting to `openid` when omitted. PKCE authorization requests are rejected because this adapter does not support PKCE.
 - **Feishu:** uses the current v3 token endpoint, with JSON request translation. The authorization request supplies `scope` using Feishu permission names; when omitted, the parameter is left out. `code_challenge`, `code_challenge_method`, `code_verifier`, and `prompt` are forwarded. The platform validates PKCE and callback matching.
 
 Both adapters return `sub`, `name`, `picture`, `email`, and `phone_number` when available. DingTalk preserves its existing extra fields and raw `dingtalk` object. Feishu returns `open_id`, `union_id`, `user_id`, and raw `feishu` data. Feishu `sub` consistently uses the application-scoped `open_id`. Optional profile fields depend on platform permissions.

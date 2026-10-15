@@ -24,6 +24,7 @@ public sealed class DingTalkOAuthProvider(HttpClient client) : IOAuthProvider
             ["client_id"] = request.ClientId,
             ["redirect_uri"] = request.RedirectUri,
             ["response_type"] = "code",
+            ["prompt"] = "consent",
             ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? "openid" : request.Scope,
             ["state"] = request.State
         });

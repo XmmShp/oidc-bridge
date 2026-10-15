@@ -101,6 +101,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
 
         var query = QueryHelpers.ParseQuery(location.Query);
         Assert.Equal("code", query["response_type"]);
+        Assert.Equal("consent", query["prompt"]);
         Assert.Equal("ding-app-key", query["client_id"]);
         Assert.Equal(redirectUri, query["redirect_uri"]);
         Assert.Equal("openid", query["scope"]);
