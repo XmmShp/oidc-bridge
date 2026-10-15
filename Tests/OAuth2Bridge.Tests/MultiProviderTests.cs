@@ -70,6 +70,12 @@ public sealed class MultiProviderTests
     [Theory]
     [InlineData("dingtalk")]
     [InlineData("feishu")]
+    [InlineData("github")]
+    [InlineData("gitee")]
+    [InlineData("weibo")]
+    [InlineData("qq")]
+    [InlineData("wechat")]
+    [InlineData("wechat-mp")]
     public async Task Discovery_IsIsolatedByProvider(string provider)
     {
         using var factory = new OAuthBridgeFactory();
@@ -84,13 +90,21 @@ public sealed class MultiProviderTests
     }
 
     [Fact]
-    public async Task Root_ListsBothProvidersAndNewServiceName()
+    public async Task Root_ListsRegisteredProvidersAndNewServiceName()
     {
         using var factory = new OAuthBridgeFactory();
         using var client = factory.CreateClient();
         using var json = JsonDocument.Parse(await client.GetStringAsync("/"));
         Assert.Equal("oauth2-bridge", json.RootElement.GetProperty("service").GetString());
-        Assert.Equal(2, json.RootElement.GetProperty("providers").GetArrayLength());
+        var providers = json.RootElement.GetProperty("providers").EnumerateArray()
+            .Select(provider => provider.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "dingtalk", "feishu", "gitee", "github", "qq", "wechat", "wechat-mp", "weibo" }, providers.Order().ToArray());
+        Assert.DoesNotContain("gitlab", providers);
+        Assert.DoesNotContain("discord", providers);
+        var native = json.RootElement.GetProperty("direct_providers").EnumerateArray().ToArray();
+        Assert.Contains(native, p => p.GetProperty("name").GetString() == "gitlab" &&
+            p.GetProperty("metadata").GetString() == "https://gitlab.com/.well-known/openid-configuration");
+        Assert.Contains(native, p => p.GetProperty("name").GetString() == "discord");
     }
 
     [Theory]
@@ -114,6 +128,8 @@ public sealed class MultiProviderTests
     [InlineData("/unknown/authorize")]
     [InlineData("/unknown/userinfo")]
     [InlineData("/unknown/.well-known/oauth-authorization-server")]
+    [InlineData("/gitlab/authorize")]
+    [InlineData("/discord/.well-known/oauth-authorization-server")]
     public async Task UnknownProvider_ReturnsNotFound(string path)
     {
         using var factory = new OAuthBridgeFactory();

@@ -19,7 +19,7 @@ public sealed record AuthorizationRequest(string ClientId, string RedirectUri, s
 public sealed record TokenRequest(string ClientId, string ClientSecret, string Code, string RedirectUri, string CodeVerifier);
 public sealed record ProviderToken(
     [property: JsonPropertyName("access_token")] string AccessToken,
-    [property: JsonPropertyName("expires_in")] long ExpiresIn,
+    [property: JsonPropertyName("expires_in"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ExpiresIn,
     [property: JsonPropertyName("refresh_token"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RefreshToken = null,
     [property: JsonPropertyName("scope"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Scope = null,
     [property: JsonPropertyName("token_type")] string TokenType = "Bearer");
