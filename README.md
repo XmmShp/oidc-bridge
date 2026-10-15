@@ -2,15 +2,16 @@
 
 `oauth2-bridge` converts platform-specific OAuth capabilities into a consistent OAuth 2.0 authorization-code interface. It is an ASP.NET Core (`net10.0`) service for clients such as identity brokers and web applications.
 
-Adapters support **DingTalk, Feishu, GitHub, Gitee, QQ, Weibo, WeChat website login, and WeChat Official Account web authorization**. Clients use the same authorization, token, discovery, and user information interface for each adapter. Platforms that already provide standard OAuth/OIDC with discovery are listed for direct integration instead of being proxied.
+Adapters support **DingTalk, Feishu, GitHub, Gitee, QQ, and Weibo**. Clients use the same authorization, token, discovery, and user information interface for each adapter. Platforms that already provide standard OAuth/OIDC with discovery are listed for direct integration instead of being proxied.
+
+The bridge is stateless: it does not store login sessions, authorization codes, user profiles, tokens, or encryption keys. It returns the original upstream access token, and user information is fetched from the platform on each request. Instances can be restarted or replaced without transferring state, and deployment requires no database, shared cache, persistent volume, or sticky sessions. OAuth `state` is passed through and validated by the downstream client; it is not stored by this service.
 
 ## Architecture
 
 ```text
 OAuth client → shared OAuth endpoints → IOAuthProvider
                                        ├── DingTalk / Feishu
-                                       ├── GitHub / Gitee / Weibo / QQ
-                                       └── WeChat website / Official Account
+                                       └── GitHub / Gitee / Weibo / QQ
 ```
 
 - `OAuthEndpoints` owns routing, common request validation, client authentication parsing, and OAuth responses.
@@ -47,7 +48,7 @@ This service implements OAuth 2.0 and does not expose OpenID Connect discovery e
 
 Use the selected platform's application ID/key and application secret as `client_id`/`client_secret`. Token requests support `client_secret_basic` and `client_secret_post`; the bridge converts these to the platform's expected request format. Credentials are not stored in service configuration. New adapters require the original `redirect_uri` in the token request.
 
-There is no bridge callback or independent client registration. Register the downstream client's callback URL in the platform console. Authorization-code validation, token lifetime, and application permissions are enforced by the platform. Tokens are upstream tokens except for the encrypted WeChat envelope described below. Only `authorization_code` is supported; refresh-token grants are not implemented, even when the upstream response includes a refresh token. When the upstream does not provide a token lifetime, `expires_in` is omitted rather than invented.
+There is no bridge callback or independent client registration. Register the downstream client's callback URL in the platform console. Authorization-code validation, token lifetime, and application permissions are enforced by the platform. Access tokens are passed through from the upstream provider without local wrapping or reissuance. Only `authorization_code` is supported; refresh-token grants are not implemented, even when the upstream response includes a refresh token. When the upstream does not provide a token lifetime, `expires_in` is omitted rather than invented.
 
 ## Platform selection
 
@@ -61,10 +62,10 @@ The following public authorization-code flows need bridging because discovery is
 | `gitee` | Gitee.com OAuth application | `user_info` | Numeric account `id` as a string |
 | `qq` | QQ Connect website application | `get_user_info` | Application-scoped `openid` |
 | `weibo` | Weibo website OAuth application | No scope parameter | Account `uid` as a string |
-| `wechat` | WeChat Open Platform website application | `snsapi_login` | Application-scoped `openid` |
-| `wechat-mp` | WeChat Official Account web authorization | `snsapi_userinfo` | Application-scoped `openid` |
 
-Scopes use platform-native permission names. The bridge accepts space-separated scope lists and translates to commas for QQ and Weibo. Website and Official Account WeChat credentials/scopes belong to different application types and must not be mixed. There is no client-side JSAPI, mini-program login, or enterprise auto-login flow in these adapters.
+Scopes use platform-native permission names. The bridge accepts space-separated scope lists and translates to commas for QQ and Weibo. There is no client-side JSAPI, mini-program login, or enterprise auto-login flow in these adapters.
+
+WeChat website login and Official Account web authorization are currently unsupported. Their userinfo contract requires both an access token and `openid`; the previous encrypted-envelope solution required persistent/shared keys and has been removed to preserve stateless deployment. `/wechat/*` and `/wechat-mp/*` return HTTP 404 and are absent from discovery listings. A future adapter must preserve the stateless contract without imposing non-standard userinfo parameters on clients.
 
 The following providers already have official discovery endpoints and **do not get bridge routes**:
 
@@ -90,11 +91,8 @@ DingTalk and Feishu return `sub`, `name`, `picture`, `email`, and `phone_number`
 - **GitHub / Gitee:** use public profile fields, with `login` as the display-name fallback. GitHub requests JSON token responses and supports `S256` PKCE. The GitHub `/user` API only returns public email; this adapter does not fetch private email addresses or claim they are verified. GitHub may omit `expires_in` for non-expiring tokens.
 - **QQ:** translates token exchange to GET with `fmt=json`, translates scope separators, resolves `openid` and the application ID through `/oauth2.0/me`, then calls `get_user_info`. `state` is required.
 - **Weibo:** normalizes the token response; `/userinfo` queries the token owner before fetching that user's profile. Large IDs stay strings and display names never become subjects.
-- **WeChat:** translates `client_id`/`client_secret` to `appid`/`secret`. Because upstream userinfo requires both `access_token` and `openid`, the returned bearer token is an authenticated, encrypted envelope containing that pair and the upstream expiry. Send it only to this bridge's `/userinfo`; it is not a raw token for calling WeChat APIs. `snsapi_base` returns an identity-only profile after checking upstream token validity. A token remains usable for repeated userinfo requests until expiry.
 
-The new adapters reject PKCE requests when that upstream flow has not been implemented with PKCE; they do not silently discard a challenge or verifier. Upstream transport failures, rate limits, and malformed responses produce 502; rejected tokens produce a bearer challenge. Upstream error bodies are not returned to clients. HTTP client URL logging is disabled for new adapters because some native APIs require tokens or application secrets in their query string.
-
-WeChat envelopes use ASP.NET Core Data Protection. Persist and share the key ring across container restarts and replicas so issued envelopes remain readable. In the current root-user Docker image, mount `/root/.aspnet/DataProtection-Keys`. Without persistent keys, restarting/replacing a container can invalidate outstanding WeChat bridge tokens. Other adapters continue passing upstream tokens through.
+Adapters reject PKCE requests when that upstream flow has not been implemented with PKCE; they do not silently discard a challenge or verifier. Upstream transport failures, rate limits, and malformed responses produce 502; rejected tokens produce a bearer challenge. Upstream error bodies are not returned to clients. HTTP client URL logging is disabled because some native APIs require tokens or application secrets in their query string. Upstream HTTP cookie storage and automatic redirects are disabled for all adapters.
 
 ## Configuration
 
@@ -119,7 +117,7 @@ dotnet test OAuth2Bridge.slnx --configuration Release
 
 The default development HTTP URL is `http://localhost:5292`. On this local machine, invoke all `dotnet` commands with elevated permissions.
 
-Tests cover adapter discovery and routing, direct-integration listings, removal of legacy endpoints, authorization parameter forwarding, platform token exchange and user claims, upstream failures, and WeChat envelope tampering/expiry. Upstream HTTP calls are stubbed; real platform sign-in requires application credentials and registered callbacks. No live account login is claimed by these tests.
+Tests cover adapter discovery and routing, direct-integration listings, removal of legacy and WeChat endpoints, authorization parameter forwarding, platform token exchange and user claims, upstream failures, and use of upstream tokens on independent bridge instances. Upstream HTTP calls are stubbed; real platform sign-in requires application credentials and registered callbacks. No live account login is claimed by these tests.
 
 ## Container and CI
 
@@ -130,7 +128,6 @@ ghcr.io/xmmshp/oauth2-bridge:latest
 ```bash
 docker run -d --name oauth2-bridge -p 8080:80 \
   -e BaseUrl=https://auth.example.com \
-  -v oauth2-bridge-keys:/root/.aspnet/DataProtection-Keys \
   ghcr.io/xmmshp/oauth2-bridge:latest
 ```
 
@@ -146,5 +143,4 @@ GitHub Actions builds and tests pull requests and pushes to `main`. Pushes to `m
 - [Gitee OAuth documentation](https://gitee.com/api/v5/oauth_doc) and [OpenAPI schema](https://gitee.com/api/v5/swagger_doc.json)
 - [QQ authorization-code flow](https://wiki.connect.qq.com/使用authorization_code获取access_token), [OpenID](https://wiki.connect.qq.com/获取用户openid_oauth2-0), and [user information](https://wiki.connect.qq.com/get_user_info)
 - [Weibo OAuth](https://open.weibo.com/wiki/Oauth2/authorize), [token owner](https://open.weibo.com/wiki/Oauth2/get_token_info), and [profile](https://open.weibo.com/wiki/2/users/show)
-- [WeChat website login](https://developers.weixin.qq.com/doc/oplatform/Website_App/WeChat_Login/Wechat_Login.html) and [Official Account web authorization](https://developers.weixin.qq.com/doc/offiaccount/OA_Web_Apps/Wechat_webpage_authorization.html)
 - [GitLab OIDC discovery](https://docs.gitlab.com/integration/openid_connect_provider/)

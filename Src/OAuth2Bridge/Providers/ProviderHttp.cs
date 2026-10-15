@@ -26,7 +26,7 @@ internal static class ProviderHttp
             throw new JsonException("Expected an upstream JSON object.");
         }
         if (!response.IsSuccessStatusCode || root.TryGetProperty("error", out _) ||
-            NonZero(root, "errcode") || NonZero(root, "ret") || NonZero(root, "error_code"))
+            NonZero(root, "ret") || NonZero(root, "error_code"))
         {
             var upstreamError = Text(root, "error");
             var status = (int)response.StatusCode;

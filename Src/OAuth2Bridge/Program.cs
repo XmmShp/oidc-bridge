@@ -1,6 +1,5 @@
 using OAuth2Bridge;
 using OAuth2Bridge.Providers;
-using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOptions<OAuth2BridgeOptions>()
@@ -10,19 +9,12 @@ builder.Services.AddOptions<OAuth2BridgeOptions>()
         string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment),
         "BaseUrl is required and must be an absolute HTTP(S) URL without credentials, query, or fragment.")
     .ValidateOnStart();
-builder.Services.AddHttpClient<FeishuOAuthProvider>();
-builder.Services.AddTransient<IOAuthProvider>(services => services.GetRequiredService<FeishuOAuthProvider>());
-builder.Services.AddHttpClient<DingTalkOAuthProvider>();
-builder.Services.AddTransient<IOAuthProvider>(services => services.GetRequiredService<DingTalkOAuthProvider>());
-builder.Services.AddDataProtection().SetApplicationName("oauth2-bridge");
-builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<WeChatTokenCodec>();
+AddProvider<FeishuOAuthProvider>();
+AddProvider<DingTalkOAuthProvider>();
 AddProvider<GitHubOAuthProvider>();
 AddProvider<GiteeOAuthProvider>();
 AddProvider<WeiboOAuthProvider>();
 AddProvider<QqOAuthProvider>();
-AddProvider<WeChatOAuthProvider>();
-AddProvider<WeChatOfficialAccountOAuthProvider>();
 builder.Services.AddScoped<OAuthProviderRegistry>();
 builder.Services.AddProblemDetails();
 
@@ -47,7 +39,7 @@ void AddProvider<TProvider>() where TProvider : class, IOAuthProvider
     // Some upstream APIs require credentials in their query string. Do not log those URLs
     // or follow redirects to a different upstream host.
     builder.Services.AddHttpClient<TProvider>().RemoveAllLoggers()
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
     builder.Services.AddTransient<IOAuthProvider>(services => services.GetRequiredService<TProvider>());
 }
 

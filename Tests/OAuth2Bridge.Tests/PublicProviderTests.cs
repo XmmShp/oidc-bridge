@@ -2,12 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using OAuth2Bridge.Providers;
 
 namespace OAuth2Bridge.Tests;
@@ -19,9 +17,7 @@ public sealed class PublicProviderTests
         { "github", "https://github.com/login/oauth/authorize", "client_id", "read:user" },
         { "gitee", "https://gitee.com/oauth/authorize", "client_id", "user_info" },
         { "weibo", "https://api.weibo.com/oauth2/authorize", "client_id", "" },
-        { "qq", "https://graph.qq.com/oauth2.0/authorize", "client_id", "get_user_info" },
-        { "wechat", "https://open.weixin.qq.com/connect/qrconnect", "appid", "snsapi_login" },
-        { "wechat-mp", "https://open.weixin.qq.com/connect/oauth2/authorize", "appid", "snsapi_userinfo" }
+        { "qq", "https://graph.qq.com/oauth2.0/authorize", "client_id", "get_user_info" }
     };
 
     [Theory]
@@ -45,15 +41,12 @@ public sealed class PublicProviderTests
         Assert.Equal("a+b&中文", query["state"]);
         if (scope.Length > 0) Assert.Equal(scope, query["scope"]);
         else Assert.False(query.ContainsKey("scope"));
-        if (provider.StartsWith("wechat")) Assert.Equal("#wechat_redirect", location.Fragment);
     }
 
     [Theory]
     [InlineData("gitee")]
     [InlineData("weibo")]
     [InlineData("qq")]
-    [InlineData("wechat")]
-    [InlineData("wechat-mp")]
     public async Task Authorize_RejectsUnimplementedPkce(string provider)
     {
         using var factory = new OAuthBridgeFactory();
@@ -141,7 +134,6 @@ public sealed class PublicProviderTests
     [InlineData("gitee", 401, "{\"error\":\"invalid_client\"}", 400, "invalid_client")]
     [InlineData("weibo", 200, "{\"error_code\":21325,\"error\":\"private-data\"}", 400, "invalid_grant")]
     [InlineData("qq", 200, "{\"error\":100020,\"error_description\":\"private-data\"}", 400, "invalid_grant")]
-    [InlineData("wechat", 200, "{\"errcode\":40029,\"errmsg\":\"private-data\"}", 400, "invalid_grant")]
     [InlineData("github", 503, "private-data", 502, null)]
     [InlineData("gitee", 429, "private-data", 502, null)]
     [InlineData("github", 200, "not-json", 502, null)]
@@ -258,6 +250,38 @@ public sealed class PublicProviderTests
         Assert.Equal(2, calls);
     }
 
+    [Theory]
+    [InlineData("github")]
+    [InlineData("gitee")]
+    public async Task UpstreamToken_CanBeUsedOnAnIndependentBridgeInstance(string provider)
+    {
+        string accessToken;
+        using (var issuingFactory = Factory(provider, (_, _) =>
+                   Task.FromResult(Json("""{"access_token":"original-upstream-token","expires_in":3600}"""))))
+        using (var issuingClient = issuingFactory.CreateClient())
+        {
+            using var response = await issuingClient.PostAsync($"/{provider}/token", TokenForm());
+            response.EnsureSuccessStatusCode();
+            using var token = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            accessToken = token.RootElement.GetProperty("access_token").GetString()!;
+            Assert.Equal("original-upstream-token", accessToken);
+        }
+
+        // The issuer instance has been disposed. No shared cache, keys, or session is supplied.
+        using var consumingFactory = Factory(provider, (request, _) =>
+        {
+            if (provider == "github") Assert.Equal($"Bearer {accessToken}", request.Headers.Authorization!.ToString());
+            else Assert.Equal(accessToken, QueryHelpers.ParseQuery(request.RequestUri!.Query)["access_token"]);
+            return Task.FromResult(Json("""{"id":123,"login":"user"}"""));
+        });
+        using var consumingClient = consumingFactory.CreateClient();
+        consumingClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var user = await consumingClient.GetAsync($"/{provider}/userinfo");
+        user.EnsureSuccessStatusCode();
+        using var profile = JsonDocument.Parse(await user.Content.ReadAsStringAsync());
+        Assert.Equal("123", profile.RootElement.GetProperty("sub").GetString());
+    }
+
     private static HttpResponseMessage QqToken(Dictionary<string, Microsoft.Extensions.Primitives.StringValues> query)
     {
         Assert.Equal("json", query["fmt"]);
@@ -281,24 +305,15 @@ public sealed class PublicProviderTests
         return Json("""{"ret":0,"nickname":"QQ User","figureurl_qq_2":"https://example.com/avatar"}""");
     }
 
-    internal static WebApplicationFactory<Program> Factory(string provider, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send, TimeProvider? time = null) =>
+    internal static WebApplicationFactory<Program> Factory(string provider, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) =>
         new OAuthBridgeFactory().WithWebHostBuilder(builder => builder.ConfigureServices(services =>
         {
-            services.RemoveAll<IDataProtectionProvider>();
-            services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
-            if (time is not null)
-            {
-                services.RemoveAll<TimeProvider>();
-                services.AddSingleton(time);
-            }
             switch (provider)
             {
                 case "github": services.AddHttpClient<GitHubOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
                 case "gitee": services.AddHttpClient<GiteeOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
                 case "weibo": services.AddHttpClient<WeiboOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
                 case "qq": services.AddHttpClient<QqOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
-                case "wechat": services.AddHttpClient<WeChatOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
-                case "wechat-mp": services.AddHttpClient<WeChatOfficialAccountOAuthProvider>().ConfigurePrimaryHttpMessageHandler(() => new StubHandler(send)); break;
                 default: throw new ArgumentOutOfRangeException(nameof(provider));
             }
         }));

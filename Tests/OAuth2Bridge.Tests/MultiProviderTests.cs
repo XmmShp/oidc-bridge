@@ -74,8 +74,6 @@ public sealed class MultiProviderTests
     [InlineData("gitee")]
     [InlineData("weibo")]
     [InlineData("qq")]
-    [InlineData("wechat")]
-    [InlineData("wechat-mp")]
     public async Task Discovery_IsIsolatedByProvider(string provider)
     {
         using var factory = new OAuthBridgeFactory();
@@ -98,7 +96,7 @@ public sealed class MultiProviderTests
         Assert.Equal("oauth2-bridge", json.RootElement.GetProperty("service").GetString());
         var providers = json.RootElement.GetProperty("providers").EnumerateArray()
             .Select(provider => provider.GetProperty("name").GetString()).ToArray();
-        Assert.Equal(new[] { "dingtalk", "feishu", "gitee", "github", "qq", "wechat", "wechat-mp", "weibo" }, providers.Order().ToArray());
+        Assert.Equal(new[] { "dingtalk", "feishu", "gitee", "github", "qq", "weibo" }, providers.Order().ToArray());
         Assert.DoesNotContain("gitlab", providers);
         Assert.DoesNotContain("discord", providers);
         var native = json.RootElement.GetProperty("direct_providers").EnumerateArray().ToArray();
@@ -122,6 +120,23 @@ public sealed class MultiProviderTests
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
         using var result = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("wechat")]
+    [InlineData("wechat-mp")]
+    public async Task RemovedWeChatAdapters_ReturnNotFound(string provider)
+    {
+        using var factory = new OAuthBridgeFactory();
+        using var client = factory.CreateClient(new() { AllowAutoRedirect = false });
+        foreach (var path in new[] { $"/{provider}/authorize", $"/{provider}/userinfo",
+                     $"/{provider}/.well-known/oauth-authorization-server", $"/.well-known/oauth-authorization-server/{provider}" })
+        {
+            using var result = await client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, result.StatusCode);
+        }
+        using var token = await client.PostAsync($"/{provider}/token", new FormUrlEncodedContent(new Dictionary<string, string>()));
+        Assert.Equal(HttpStatusCode.NotFound, token.StatusCode);
     }
 
     [Theory]
