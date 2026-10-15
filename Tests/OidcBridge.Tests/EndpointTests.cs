@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text.Json;
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -9,6 +11,40 @@ namespace OidcBridge.Tests;
 
 public sealed class EndpointTests
 {
+    [Fact]
+    public async Task TokenFailureDiagnostics_DoNotLogCodesOrCredentials()
+    {
+        using var logs = new CapturingLogs();
+        using var factory = new OidcBridgeFactory().WithWebHostBuilder(builder =>
+            builder.ConfigureLogging(logging => logging.AddProvider(logs)));
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync("/dingtalk/token", new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code", ["client_id"] = "private-client",
+            ["client_secret"] = "private-secret", ["code"] = "private-code"
+        }));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var diagnostics = string.Join("\n", logs.Messages);
+        Assert.Contains("A bridge-issued authorization code is required.", diagnostics);
+        Assert.DoesNotContain("private-client", diagnostics);
+        Assert.DoesNotContain("private-secret", diagnostics);
+        Assert.DoesNotContain("private-code", diagnostics);
+    }
+
+    private sealed class CapturingLogs : ILoggerProvider
+    {
+        public ConcurrentQueue<string> Messages { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(Messages);
+        public void Dispose() { }
+        private sealed class CapturingLogger(ConcurrentQueue<string> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => messages.Enqueue(formatter(state, exception));
+        }
+    }
+
     [Fact]
     public async Task Root_PresentsOidcDiscoveryAsPrimaryIntegration()
     {

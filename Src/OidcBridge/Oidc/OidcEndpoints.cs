@@ -16,7 +16,18 @@ internal static partial class OidcEndpoints
             Resolve(request, providers) is not null ? Results.Ok(oidc.Jwks()) : Results.NotFound());
         app.MapGet("/{provider}/callback", Callback);
         app.MapGet("/{provider}/authorize", Authorize);
-        app.MapPost("/{provider}/token", Token);
+        app.MapPost("/{provider}/token", Token).AddEndpointFilter(async (context, next) =>
+        {
+            var result = await next(context);
+            if (result is IValueHttpResult { Value: OAuthError error })
+            {
+                // OAuthError contains normalized protocol errors, never upstream bodies or request values.
+                context.HttpContext.RequestServices.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("OidcBridge.Token")
+                    .LogWarning("OIDC token rejected: {Error}; {Reason}", error.Error, error.ErrorDescription);
+            }
+            return result;
+        });
         app.MapGet("/{provider}/userinfo", UserInfo);
         app.MapPost("/{provider}/userinfo", UserInfo);
         app.MapGet("/{provider}/.well-known/oauth-authorization-server", Metadata);
