@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Src/">
+    <Project Path="Src/OidcBridge/OidcBridge.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="Tests/OidcBridge.Tests/OidcBridge.Tests.csproj" />
+  </Folder>
+</Solution>

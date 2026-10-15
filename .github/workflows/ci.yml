@@ -32,13 +32,13 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore
-        run: dotnet restore OAuth2Bridge.slnx
+        run: dotnet restore OidcBridge.slnx
 
       - name: Build
-        run: dotnet build OAuth2Bridge.slnx --configuration Release --no-restore
+        run: dotnet build OidcBridge.slnx --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test OAuth2Bridge.slnx --configuration Release --no-build --logger trx --results-directory TestResults
+        run: dotnet test OidcBridge.slnx --configuration Release --no-build --logger trx --results-directory TestResults
 
   docker:
     name: Publish GHCR Image

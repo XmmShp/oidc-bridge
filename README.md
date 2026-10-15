@@ -1,75 +1,148 @@
-# oauth2-bridge
+# oidc-bridge
 
-`oauth2-bridge` converts platform-specific OAuth capabilities into a consistent OAuth 2.0 authorization-code interface. It is an ASP.NET Core (`net10.0`) service for clients such as identity brokers and web applications.
+`oidc-bridge` turns platform OAuth login into an OpenID Connect authorization-code interface. OIDC is the service's core protocol: each adapter exposes discovery, authorization, token, userinfo, and JWKS endpoints. It is an ASP.NET Core (`net10.0`) service for identity brokers and web applications.
 
-Adapters support **DingTalk, Feishu, GitHub, Gitee, QQ, and Weibo**. Clients use the same authorization, token, discovery, and user information interface for each adapter. Platforms that already provide standard OAuth/OIDC with discovery are listed for direct integration instead of being proxied.
+Adapters support **DingTalk, Feishu, GitHub, Gitee, QQ, and Weibo** using OpenAPI directly, without platform SDKs. Platforms with their own standard OIDC discovery should be integrated directly.
 
-The bridge is stateless: it does not store login sessions, authorization codes, user profiles, tokens, or encryption keys. It returns the original upstream access token, and user information is fetched from the platform on each request. Instances can be restarted or replaced without transferring state, and deployment requires no database, shared cache, persistent volume, or sticky sessions. OAuth `state` is passed through and validated by the downstream client; it is not stored by this service.
+The service is stateless at runtime. It does not store login sessions, authorization codes, user profiles, or tokens, and requires no database, cache, persistent volume, or sticky sessions. All instances derive the same RSA key from the same configured `SigningKey` string. Encrypted tickets and short-lived browser correlation cookies carry the authorization context; userinfo fetches the platform profile on each request.
 
-## Architecture
+## Configuration
 
-```text
-OAuth client → shared OAuth endpoints → IOAuthProvider
-                                       ├── DingTalk / Feishu
-                                       └── GitHub / Gitee / Weibo / QQ
+All settings use the standard .NET configuration system at the root. `BaseUrl`, `SigningKey`, and `Clients` can all be configured in `appsettings.json`:
+
+```json
+{
+  "BaseUrl": "https://auth.example.com/subroute",
+  "SigningKey": "a-long-random-secret-string-kept-identical-on-all-instances",
+  "Clients": [
+    {
+      "Provider": "dingtalk",
+      "ClientId": "your-platform-app-id",
+      "RedirectUris": ["https://client.example.com/oidc/callback"]
+    },
+    {
+      "Provider": "feishu",
+      "ClientId": "your-feishu-app-id",
+      "RedirectUris": ["https://client.example.com/oidc/callback"],
+      "UpstreamScope": "contact:user.base:readonly"
+    }
+  ]
+}
 ```
 
-- `OAuthEndpoints` owns routing, common request validation, client authentication parsing, and OAuth responses.
-- `OAuthProviderRegistry` resolves the adapter by the required provider name in the URL.
-- Each `IOAuthProvider` implementation owns platform authorization parameters, token exchange, upstream errors, and user claim normalization.
-- All adapters call OpenAPI directly using typed `HttpClient` instances with request cancellation support. `FormOAuthProvider` shares form-based OAuth mechanics; platform implementations own their endpoint and profile mappings.
+- `BaseUrl` is the required external service base URL, excluding the provider suffix. Production OIDC URLs require HTTPS; HTTP loopback is allowed for local development. Credentials, queries, and fragments are rejected.
+- `SigningKey` is a required non-empty secret string, not a PEM or encoded RSA key. Unicode, whitespace, and punctuation are supported. Input is exact UTF-8: it is not trimmed or Unicode-normalized. A long random value is recommended: someone who guesses this string can reconstruct the private key. Environment variables or a secret manager can keep production secrets out of configuration files.
+- `Clients` is the reloadable allowlist of provider/application IDs and exact downstream redirect URIs. Client secrets are not stored. The list may be empty for discovery-only deployment; authorization requires a registered entry. Duplicate provider/client pairs and invalid redirect URIs fail startup.
+- `UpstreamScope` contains native platform permissions. When omitted, the adapter uses its default. OIDC scopes are separate and are never forwarded as native platform permissions.
 
-To add a platform, implement `IOAuthProvider` and register it with dependency injection. Shared endpoints discover the registration without new platform-specific routes or conditionals.
+The platform's app ID and app secret remain the downstream OIDC client's `client_id` and `client_secret`. OIDC is always enabled; there is no optional OAuth-only deployment mode or PEM configuration.
+
+The framework's normal configuration precedence is preserved: environment variables override JSON values, and command-line arguments override environment variables. Environment-specific JSON files also retain their normal precedence. For example, these optional overrides replace the corresponding values from `appsettings.json`:
+
+```bash
+export BaseUrl=https://auth.example.com/subroute
+export SigningKey='a-long-random-secret-string-kept-identical-on-all-instances'
+```
+
+Configuration source and reload policy are separate: `BaseUrl` and `SigningKey` are captured at startup from the merged .NET configuration, regardless of which source supplied them. Only `Clients` is applied dynamically.
+
+### Updating clients without restarting
+
+The service watches the standard JSON configuration files. Edit the root `Clients` array in `appsettings.json`; new requests use the complete validated replacement list after the file change is detected. Adding clients, changing callback allowlists or native scopes, and removing clients require no restart. Use a single JSON source for `Clients`: environment variables and environment-specific configuration files take precedence and can otherwise preserve or override entries from another file.
+
+Startup configuration must be valid. After startup, malformed JSON and invalid client lists are rejected with a warning, and the last valid client configuration stays active. Correcting the file applies the next valid update automatically. An explicit `"Clients": []` removes all registrations. Write a complete file and replace it atomically when possible, instead of exposing intermediate edits.
+
+Authorization, callback, token, and userinfo processing each consult the latest client list. Removing a client blocks subsequent bridge operations, including userinfo with a previously issued wrapped access token. Removing a redirect URI also prevents pending callbacks and code exchanges for that URI. Native scope updates affect future authorizations. Already issued ID Tokens remain verifiable until expiry; configuration reload is not token revocation at downstream applications.
+
+`BaseUrl` and the derived signing key are fixed for the process lifetime. Client reload does not change the issuer, regenerate keys, or invalidate tickets for unchanged clients. Changes to their effective configuration values require restarting the instance, whether those values come from JSON, environment variables, or another standard configuration source.
+
+The last valid client snapshot is deployment configuration held in memory, not per-user state. Instances still have no database, shared cache, persisted sessions, or token/code storage. Roll out the same client configuration to every replica; each instance watches and validates its own mounted file.
+
+### Stable key derivation
+
+Derivation **v1** is fixed:
+
+1. PBKDF2-HMAC-SHA512, 210,000 iterations, salt `oidc-bridge/key-derivation/v1`, 64 output bytes.
+2. HMAC-DRBG-SHA512 with the first 48 bytes as its entropy input, the remaining 16 bytes as its nonce, security strength 256, personalization `oidc-bridge/rsa-2048/v1`, and no prediction-resistant reseeding.
+3. Bouncy Castle RSA-2048 generation with exponent 65537 and certainty 128. The dependency version is pinned, and a fixed public-key test vector guards against generation changes during upgrades.
+
+The derived key signs RS256 ID Tokens and protects transaction/code/access-token envelopes. JWKS exposes only the public RSA parameters and a stable key ID. Derivation is performed once at startup per instance and does not depend on host, OS, issuer URL, time, or random startup values. The deterministic DRBG is used only for deriving this key; correlation values and ticket encryption still use fresh cryptographic randomness.
+
+Changing `SigningKey` changes the key pair and invalidates in-flight tickets and wrapped access tokens. Deploy changes consistently across replicas. The initial implementation has one active key and does not provide overlapping key rotation, per-token revocation, or local replay tracking. Do not alter v1 parameters without a key migration.
+
+### Reverse proxy paths
+
+`BaseUrl` generates metadata, issuer, and public callback URLs. Its path is preserved and trailing slashes are removed before appending the provider. It is never inferred from request URLs, Host, or forwarded headers, and it does not change routing.
+
+For `BaseUrl=https://auth.example.com/subroute`, the service advertises `https://auth.example.com/subroute/feishu/token`. The proxy must strip `/subroute` and forward to `/feishu/token`. The same applies to discovery, JWKS, and callback routes. Forwarding `/subroute/feishu/token` directly returns HTTP 404.
 
 ## Endpoints
 
-Replace `{provider}` with one of the adapter names below:
+Each provider has an issuer `{BaseUrl}/{provider}`:
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| GET | `/` | Bridge adapters in `providers`, plus official discovery links in `direct_providers` |
-| GET | `/{provider}/.well-known/oauth-authorization-server` | Provider metadata |
-| GET | `/.well-known/oauth-authorization-server/{provider}` | RFC 8414 discovery for the provider issuer |
-| GET | `/{provider}/authorize` | Redirect to the platform authorization page |
-| POST | `/{provider}/token` | Exchange an authorization code |
-| GET | `/{provider}/userinfo` | Fetch normalized user claims using a bearer token |
+| GET | `/` | Adapter OIDC discovery links and official direct-integration discovery links |
+| GET | `/{provider}/.well-known/openid-configuration` | Primary OIDC discovery |
+| GET | `/{provider}/jwks` | Public signing key |
+| GET | `/{provider}/authorize` | Begin OIDC authorization |
+| GET | `/{provider}/callback` | Platform callback to the bridge |
+| POST | `/{provider}/token` | Redeem a bridge authorization code and obtain an ID Token |
+| GET / POST | `/{provider}/userinfo` | Scope-filtered claims using a bearer authorization header |
+| GET | `/{provider}/.well-known/oauth-authorization-server` | OAuth metadata alias describing the same OIDC flow |
+| GET | `/.well-known/oauth-authorization-server/{provider}` | RFC 8414 metadata alias |
 
-OAuth endpoints require an explicit provider. Unprefixed `/authorize`, `/token`, `/userinfo`, and discovery endpoints return HTTP 404, as do unknown providers.
-
-This service implements OAuth 2.0 and does not expose OpenID Connect discovery endpoints, issue ID tokens, or expose JWKS. Use a generic OAuth client integration.
+An explicit provider is required. Unprefixed authorization/token/userinfo/discovery routes and unknown providers return HTTP 404. The old native OAuth passthrough flow is removed: raw platform codes and access tokens cannot be used directly at bridge endpoints.
 
 ## Authorization flow
 
-1. Redirect the browser to `/{provider}/authorize?response_type=code&client_id=...&redirect_uri=...&state=...`.
-2. The bridge redirects to the platform. The original `redirect_uri` and `state` are preserved.
-3. The platform redirects directly to the client callback with an authorization code. The client validates `state`.
-4. POST `grant_type=authorization_code`, `code`, and the platform credentials to `/{provider}/token`. For Feishu, also send the identical `redirect_uri`. Use `application/x-www-form-urlencoded`; JSON is accepted for compatibility.
-5. Call `/{provider}/userinfo` with `Authorization: Bearer <access_token>` on the same provider.
+1. Register `{BaseUrl}/{provider}/callback` in the platform console, and register the downstream callback in `Clients`.
+2. Configure the downstream client with issuer `{BaseUrl}/{provider}`. Discovery is `{issuer}/.well-known/openid-configuration`.
+3. Send `response_type=code`, a registered `client_id` and `redirect_uri`, `scope=openid profile email`, and normally `state`, `nonce`, and S256 PKCE. The bridge validates the exact client/callback pair before redirecting. Supported OIDC scopes are `openid`, `profile`, `email`, and `phone`; `openid` is required.
+4. The platform returns to the bridge callback. A signed/encrypted 10-minute transaction ticket and an HttpOnly, SameSite=Lax cookie bind the browser to the request. The cookie uses the public callback path, is Secure for HTTPS, and is deleted on completion. Each parallel login attempt has a separate cookie. There is no server-side login session.
+5. The bridge redirects to the downstream callback with the original `state`, `iss`, and a signed/encrypted code valid for two minutes. The downstream sends a form-encoded token request with its platform credentials, original downstream `redirect_uri`, and PKCE verifier if supplied. `client_secret_basic` and `client_secret_post` are supported.
+6. The bridge redeems the original upstream code only at token exchange, with its own callback URI and independent upstream PKCE where supported. Upstream one-time code redemption protects against reuse across bridge instances. It fetches the profile and issues a five-minute RS256 ID Token containing `iss`, `sub`, `aud`, `iat`, `exp`, `at_hash`, and the original `nonce` when supplied.
+7. The OIDC access token is an encrypted/signed envelope containing the native access token, client ID, subject, and granted scopes. It expires at the earlier of one hour and the upstream lifetime, or one hour if no upstream lifetime is given. Userinfo unwraps it, fetches the profile, checks subject consistency, and filters claims by scope. Raw platform objects and unrequested profile/email/phone claims are not exposed.
 
-Use the selected platform's application ID/key and application secret as `client_id`/`client_secret`. Token requests support `client_secret_basic` and `client_secret_post`; the bridge converts these to the platform's expected request format. Credentials are not stored in service configuration. New adapters require the original `redirect_uri` in the token request.
+Any instance with the same `SigningKey`, `BaseUrl`, and client configuration can handle any step. If the platform has consumed a code and a later step fails, restart login. Bridge codes are not locally stored or marked consumed; code reuse is rejected by the platform.
 
-There is no bridge callback or independent client registration. Register the downstream client's callback URL in the platform console. Authorization-code validation, token lifetime, and application permissions are enforced by the platform. Access tokens are passed through from the upstream provider without local wrapping or reissuance. Only `authorization_code` is supported; refresh-token grants are not implemented, even when the upstream response includes a refresh token. When the upstream does not provide a token lifetime, `expires_in` is omitted rather than invented.
+### Protocol scope and upstream limitations
 
-## Platform selection
+The service implements the OIDC authorization-code flow for confidential clients. It does not implement implicit/hybrid flows, public clients, refresh/offline access, dynamic registration, request objects, the `claims` request parameter, or logout/session management. No OpenID conformance certification is claimed.
 
-The following public authorization-code flows need bridging because discovery is missing or their parameter/token/userinfo contracts need translation. Endpoint selection is fixed in each implementation; caller-supplied upstream hosts are not accepted.
+The bridge has no SSO session, so `prompt=none` returns `login_required`. Native OAuth does not reliably attest authentication age or force fresh authentication: `prompt=login` and valid `max_age` requests return `login_required`, and no `auth_time` is invented. `prompt=select_account` returns `account_selection_required`. Explicit `prompt=consent` is supported for DingTalk/Feishu and returns `consent_required` for other adapters. Display/locales/ACR preferences are best-effort hints and do not cause an error.
 
-| Adapter | Application type | Default native scope | Stable `sub` |
+See [OpenID Connect Core](https://openid.net/specs/openid-connect-core-1_0.html), [Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html), and [Bouncy Castle's C# documentation](https://www.bouncycastle.org/documentation/documentation-c/).
+
+## Platform adapters
+
+| Adapter | Native authorization flow | Default native scope | Stable subject |
 | --- | --- | --- | --- |
 | `dingtalk` | DingTalk OAuth application | `openid` | `unionId` |
 | `feishu` | Feishu OAuth application | No scope parameter | `open_id` |
-| `github` | GitHub.com OAuth App | `read:user` | Numeric account `id` as a string |
-| `gitee` | Gitee.com OAuth application | `user_info` | Numeric account `id` as a string |
+| `github` | GitHub.com OAuth App | `read:user` | Numeric account ID as a string |
+| `gitee` | Gitee.com OAuth application | `user_info` | Numeric account ID as a string |
 | `qq` | QQ Connect website application | `get_user_info` | Application-scoped `openid` |
 | `weibo` | Weibo website OAuth application | No scope parameter | Account `uid` as a string |
 
-Scopes use platform-native permission names. The bridge accepts space-separated scope lists and translates to commas for QQ and Weibo. There is no client-side JSAPI, mini-program login, or enterprise auto-login flow in these adapters.
+The protocol layer owns OIDC validation and issuance; `OAuthProviderRegistry` resolves `IOAuthProvider` adapters, which own native authorization parameters, token exchange, upstream errors, and normalized profiles. `FormOAuthProvider` shares form-based native OAuth mechanics. Adding an adapter requires its implementation and DI registration, with no platform-specific routing.
 
-WeChat website login and Official Account web authorization are currently unsupported. Their userinfo contract requires both an access token and `openid`; the previous encrypted-envelope solution required persistent/shared keys and has been removed to preserve stateless deployment. `/wechat/*` and `/wechat-mp/*` return HTTP 404 and are absent from discovery listings. A future adapter must preserve the stateless contract without imposing non-standard userinfo parameters on clients.
+- **DingTalk:** JSON token exchange through `/v1.0/oauth2/userAccessToken`; profile through `/v1.0/contact/users/me` with `x-acs-dingtalk-access-token`. Authorization always includes `prompt=consent`. Downstream S256 PKCE is verified by the bridge; DingTalk does not receive an unsupported native PKCE challenge.
+- **Feishu:** v3 JSON token exchange, application-scoped `open_id`, and native PKCE independent of downstream PKCE. Optional profile permissions depend on the platform application's settings.
+- **GitHub:** JSON token responses, native S256 PKCE, public profile and public email only. Private email is not fetched and verification is not asserted. Missing upstream token lifetime is preserved internally; the bridge access token still has its own bounded lifetime.
+- **Gitee:** form token exchange and public profile normalization.
+- **QQ:** GET token exchange with `fmt=json`; token-owner lookup supplies app ID and `openid` before fetching the profile. Native scope lists use commas.
+- **Weibo:** token-owner lookup precedes profile retrieval; returned subject must match. Native scope lists use commas, and large IDs remain strings.
 
-The following providers already have official discovery endpoints and **do not get bridge routes**:
+No JSAPI, mini-program, or enterprise silent-login flow is provided. WeChat website and Official Account adapters remain unsupported; `/wechat/*` and `/wechat-mp/*` return HTTP 404.
 
-| Platform | Official discovery URL |
+Upstream transport failures, rate limits, and malformed responses produce 502; rejected bearer tokens receive a challenge. Upstream error bodies are not returned. Typed HttpClients disable URL logging, cookie storage, and automatic redirects because some platform APIs require credentials in query parameters.
+
+### Platforms to integrate directly
+
+These platforms already publish their own OIDC discovery and do not get bridge routes:
+
+| Platform | Official discovery |
 | --- | --- |
 | GitLab.com | [Discovery](https://gitlab.com/.well-known/openid-configuration) |
 | Google / Workspace | [Discovery](https://accounts.google.com/.well-known/openid-configuration) |
@@ -79,68 +152,27 @@ The following providers already have official discovery endpoints and **do not g
 | Discord | [Discovery](https://discord.com/.well-known/openid-configuration) |
 | Sign in with Apple | [Discovery](https://appleid.apple.com/.well-known/openid-configuration) |
 
-GitLab Self-Managed publishes `https://<your-instance>/.well-known/openid-configuration`; enable the application's `openid` scope. For Microsoft, select the tenant-specific discovery document when appropriate. Provider registration, enabled products/scopes, and account or tenant restrictions still apply. GitHub Actions' workload OIDC issuer is unrelated to GitHub user OAuth login.
+GitLab Self-Managed uses `https://<your-instance>/.well-known/openid-configuration`. For Microsoft, use the tenant-specific issuer when appropriate. Platform application registration, products, scopes, and tenant restrictions still apply. GitHub Actions workload OIDC is unrelated to GitHub user login.
 
-### Platform differences
-
-- **DingTalk:** calls `POST /v1.0/oauth2/userAccessToken` with camelCase JSON fields and `GET /v1.0/contact/users/me` with the `x-acs-dingtalk-access-token` header. Authorization redirects always include `prompt=consent`. The authorization request supplies `scope`, defaulting to `openid` when omitted. PKCE authorization requests are rejected because this adapter does not support PKCE.
-- **Feishu:** uses the current v3 token endpoint, with JSON request translation. The authorization request supplies `scope` using Feishu permission names; when omitted, the parameter is left out. `code_challenge`, `code_challenge_method`, `code_verifier`, and `prompt` are forwarded. The platform validates PKCE and callback matching.
-
-DingTalk and Feishu return `sub`, `name`, `picture`, `email`, and `phone_number` when available. DingTalk preserves its existing extra fields and raw `dingtalk` object. Feishu returns `open_id`, `union_id`, `user_id`, and raw `feishu` data. Feishu `sub` consistently uses the application-scoped `open_id`. Optional profile fields depend on platform permissions.
-
-- **GitHub / Gitee:** use public profile fields, with `login` as the display-name fallback. GitHub requests JSON token responses and supports `S256` PKCE. The GitHub `/user` API only returns public email; this adapter does not fetch private email addresses or claim they are verified. GitHub may omit `expires_in` for non-expiring tokens.
-- **QQ:** translates token exchange to GET with `fmt=json`, translates scope separators, resolves `openid` and the application ID through `/oauth2.0/me`, then calls `get_user_info`. `state` is required.
-- **Weibo:** normalizes the token response; `/userinfo` queries the token owner before fetching that user's profile. Large IDs stay strings and display names never become subjects.
-
-Adapters reject PKCE requests when that upstream flow has not been implemented with PKCE; they do not silently discard a challenge or verifier. Upstream transport failures, rate limits, and malformed responses produce 502; rejected tokens produce a bearer challenge. Upstream error bodies are not returned to clients. HTTP client URL logging is disabled because some native APIs require tokens or application secrets in their query string. Upstream HTTP cookie storage and automatic redirects are disabled for all adapters.
-
-## Configuration
-
-```json
-{
-  "BaseUrl": "https://auth.example.com/bridge"
-}
-```
-
-`OAuth2BridgeOptions` contains only `BaseUrl`. Platform API URLs are constants owned by each adapter. Pass `scope` in the authorization request; application credentials are supplied in the token request.
-
-`BaseUrl` is a required root-level setting for the externally visible service base URL, excluding the provider suffix. Set it through `appsettings.json` or the `BaseUrl` environment variable. It must be an absolute HTTP(S) URL without credentials, query parameters, or a fragment. Missing or invalid configuration fails at startup.
-
-The configured URL is used only to generate metadata URLs, preserving its path and removing the trailing slash before appending a provider. It is never inferred from request URLs, host headers, or forwarded headers, and it does not change application routing. For `BaseUrl=https://auth.example.com/subroute`, metadata advertises `https://auth.example.com/subroute/feishu/token`; the front proxy must strip `/subroute` and forward to `/feishu/token`. Forwarding `/subroute/feishu/token` directly returns HTTP 404.
-
-## Run and test
+## Run, test, and deploy
 
 ```bash
-dotnet run --project Src/OAuth2Bridge/OAuth2Bridge.csproj -- --BaseUrl=http://localhost:5292
-dotnet test OAuth2Bridge.slnx --configuration Release
+# Configure SigningKey in appsettings.json or supply it through an environment variable.
+dotnet run --project Src/OidcBridge/OidcBridge.csproj -- --BaseUrl=http://localhost:5292
+dotnet test OidcBridge.slnx --configuration Release
 ```
 
-The default development HTTP URL is `http://localhost:5292`. On this local machine, invoke all `dotnet` commands with elevated permissions.
+The default local HTTP URL is `http://localhost:5292`. On this local machine all `dotnet` commands require elevated permissions. Tests cover adapter translation, OIDC endpoints and constraints, signature/nonce/PKCE, callback correlation, scope filtering, tampering, expiry, replay rejection by a stub upstream, cross-instance flows, deterministic key generation with fixed vectors, and real-file client reload with invalid-update recovery and stable issuer/JWKS. Actual platform login requires real credentials and callback registration; tests do not claim live sign-in coverage.
 
-Tests cover adapter discovery and routing, direct-integration listings, removal of legacy and WeChat endpoints, authorization parameter forwarding, platform token exchange and user claims, upstream failures, and use of upstream tokens on independent bridge instances. Upstream HTTP calls are stubbed; real platform sign-in requires application credentials and registered callbacks. No live account login is claimed by these tests.
-
-## Container and CI
-
-```text
-ghcr.io/xmmshp/oauth2-bridge:latest
-```
+For hot updates in containers, prepare `./config/appsettings.json` with the `Clients` list above. Mount the whole configuration directory read-only so atomic file replacement remains visible, and use polling for filesystems that do not deliver change notifications reliably:
 
 ```bash
-docker run -d --name oauth2-bridge -p 8080:80 \
+docker run -d --name oidc-bridge -p 8080:80 \
   -e BaseUrl=https://auth.example.com \
-  ghcr.io/xmmshp/oauth2-bridge:latest
+  -e SigningKey \
+  -e DOTNET_USE_POLLING_FILE_WATCHER=1 \
+  --mount type=bind,source="$(pwd)/config",target=/config,readonly \
+  ghcr.io/xmmshp/oidc-bridge:latest --contentRoot /config
 ```
 
-GitHub Actions builds and tests pull requests and pushes to `main`. Pushes to `main` and `v*` tags publish the repository-named GHCR image with branch/tag, commit SHA, and default-branch `latest` tags. The renamed image becomes available after a successful publish workflow; the old GHCR package is separate.
-
-## Platform references
-
-- [DingTalk login documentation](https://open.dingtalk.com/document/orgapp/obtain-identity-credentials)
-- [Feishu authorization code](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)
-- [Feishu v3 user access token](https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token-v3)
-- [Feishu user information](https://open.feishu.cn/document/server-docs/authentication-management/login-state-management/get)
-- [GitHub OAuth Apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps)
-- [Gitee OAuth documentation](https://gitee.com/api/v5/oauth_doc) and [OpenAPI schema](https://gitee.com/api/v5/swagger_doc.json)
-- [QQ authorization-code flow](https://wiki.connect.qq.com/使用authorization_code获取access_token), [OpenID](https://wiki.connect.qq.com/获取用户openid_oauth2-0), and [user information](https://wiki.connect.qq.com/get_user_info)
-- [Weibo OAuth](https://open.weibo.com/wiki/Oauth2/authorize), [token owner](https://open.weibo.com/wiki/Oauth2/get_token_info), and [profile](https://open.weibo.com/wiki/2/users/show)
-- [GitLab OIDC discovery](https://docs.gitlab.com/integration/openid_connect_provider/)
+This example supplies `SigningKey` from the host environment. Alternatively, configure `BaseUrl` and `SigningKey` in the mounted JSON file and omit their corresponding `-e` flags. Updating the host file applies client changes within the watcher delay (typically a few seconds with polling). Environment variables themselves cannot hot reload. The service never writes to the mounted directory, and no persistent volume for runtime data is needed. GitHub Actions builds/tests the solution and publishes the repository-named GHCR image on pushes to `main` and `v*` tags. The renamed image is available after the first successful publish workflow; previously published packages remain separate.
