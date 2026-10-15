@@ -2,8 +2,8 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 COPY . .
-RUN dotnet restore ./Src/DingtalkOAuth2/DingtalkOAuth2.csproj
-RUN dotnet publish ./Src/DingtalkOAuth2/DingtalkOAuth2.csproj \
+RUN dotnet restore ./Src/OAuth2Bridge/OAuth2Bridge.csproj
+RUN dotnet publish ./Src/OAuth2Bridge/OAuth2Bridge.csproj \
     -c Release \
     -o /app/publish \
     --no-restore \
@@ -17,4 +17,4 @@ COPY --from=build /app/publish ./
 ENV ASPNETCORE_URLS=http://+:80
 EXPOSE 80
 
-ENTRYPOINT ["dotnet", "DingtalkOAuth2.dll"]
+ENTRYPOINT ["dotnet", "OAuth2Bridge.dll"]

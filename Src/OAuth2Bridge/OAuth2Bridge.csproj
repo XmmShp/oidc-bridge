@@ -6,8 +6,4 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="AlibabaCloud.SDK.Dingtalk" Version="2.2.36" />
-  </ItemGroup>
-
 </Project>

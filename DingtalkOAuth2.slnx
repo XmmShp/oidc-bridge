@@ -1,8 +1,0 @@
-<Solution>
-  <Folder Name="/Src/">
-    <Project Path="Src/DingtalkOAuth2/DingtalkOAuth2.csproj" />
-  </Folder>
-  <Folder Name="/Tests/">
-    <Project Path="Tests/DingtalkOAuth2.Tests/DingtalkOAuth2.Tests.csproj" />
-  </Folder>
-</Solution>

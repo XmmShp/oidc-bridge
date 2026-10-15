@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Src\DingtalkOAuth2\DingtalkOAuth2.csproj" />
+    <ProjectReference Include="..\..\Src\OAuth2Bridge\OAuth2Bridge.csproj" />
   </ItemGroup>
 
 </Project>

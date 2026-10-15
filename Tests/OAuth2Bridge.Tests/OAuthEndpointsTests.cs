@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
 
-namespace DingtalkOAuth2.Tests;
+namespace OAuth2Bridge.Tests;
 
 public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixture<OAuthBridgeFactory>
 {
@@ -16,31 +16,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
     {
         using var client = factory.CreateClient();
 
-        using var response = await client.GetAsync("/.well-known/oauth-authorization-server");
-
-        response.EnsureSuccessStatusCode();
-        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
-        var root = body.RootElement;
-
-        Assert.Equal("http://localhost", root.GetProperty("issuer").GetString());
-        Assert.Equal("http://localhost/authorize", root.GetProperty("authorization_endpoint").GetString());
-        Assert.Equal("http://localhost/token", root.GetProperty("token_endpoint").GetString());
-        Assert.Equal("http://localhost/userinfo", root.GetProperty("userinfo_endpoint").GetString());
-        Assert.Contains("authorization_code", ReadStringArray(root.GetProperty("grant_types_supported")));
-        Assert.Contains("client_secret_basic", ReadStringArray(root.GetProperty("token_endpoint_auth_methods_supported")));
-        Assert.DoesNotContain("none", ReadStringArray(root.GetProperty("token_endpoint_auth_methods_supported")));
-        Assert.Contains("unionId", ReadStringArray(root.GetProperty("claims_supported")));
-        Assert.Contains("openId", ReadStringArray(root.GetProperty("claims_supported")));
-        Assert.Contains("loginEmail", ReadStringArray(root.GetProperty("claims_supported")));
-    }
-
-    [Fact]
-    public async Task Discovery_UsesConfiguredAbsolutePublicEndpointPrefix()
-    {
-        using var prefixedFactory = factory.WithPublicEndpointPrefix("https://auth.example.com/dingtalk");
-        using var client = prefixedFactory.CreateClient();
-
-        using var response = await client.GetAsync("/.well-known/oauth-authorization-server");
+        using var response = await client.GetAsync("/dingtalk/.well-known/oauth-authorization-server");
 
         response.EnsureSuccessStatusCode();
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
@@ -50,24 +26,51 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         Assert.Equal("https://auth.example.com/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
         Assert.Equal("https://auth.example.com/dingtalk/token", root.GetProperty("token_endpoint").GetString());
         Assert.Equal("https://auth.example.com/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
+        Assert.Contains("authorization_code", ReadStringArray(root.GetProperty("grant_types_supported")));
+        Assert.Contains("client_secret_basic", ReadStringArray(root.GetProperty("token_endpoint_auth_methods_supported")));
+        Assert.DoesNotContain("none", ReadStringArray(root.GetProperty("token_endpoint_auth_methods_supported")));
+        Assert.Contains("unionId", ReadStringArray(root.GetProperty("claims_supported")));
+        Assert.Contains("openId", ReadStringArray(root.GetProperty("claims_supported")));
+        Assert.Contains("loginEmail", ReadStringArray(root.GetProperty("claims_supported")));
     }
 
     [Fact]
-    public async Task Discovery_UsesConfiguredRelativePublicEndpointPrefix()
+    public async Task Discovery_UsesConfiguredAbsoluteBaseUrl()
     {
-        using var prefixedFactory = factory.WithPublicEndpointPrefix("/oauth/dingtalk/");
+        using var prefixedFactory = factory.WithBaseUrl("https://auth.example.com/bridge");
         using var client = prefixedFactory.CreateClient();
 
-        using var response = await client.GetAsync("/.well-known/oauth-authorization-server");
+        using var response = await client.GetAsync("/dingtalk/.well-known/oauth-authorization-server");
 
         response.EnsureSuccessStatusCode();
         using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
         var root = body.RootElement;
 
-        Assert.Equal("http://localhost/oauth/dingtalk", root.GetProperty("issuer").GetString());
-        Assert.Equal("http://localhost/oauth/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
-        Assert.Equal("http://localhost/oauth/dingtalk/token", root.GetProperty("token_endpoint").GetString());
-        Assert.Equal("http://localhost/oauth/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/bridge/dingtalk", root.GetProperty("issuer").GetString());
+        Assert.Equal("https://auth.example.com/bridge/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/bridge/dingtalk/token", root.GetProperty("token_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/bridge/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
+    }
+
+    [Fact]
+    public async Task Discovery_UsesConfiguredBaseUrlRegardlessOfRequestOriginAndForwardedHeaders()
+    {
+        using var prefixedFactory = factory.WithBaseUrl("https://auth.example.com/subroute");
+        using var client = prefixedFactory.CreateClient(new() { BaseAddress = new Uri("http://internal.example:8080") });
+        client.DefaultRequestHeaders.Add("X-Forwarded-Host", "forwarded.example");
+        client.DefaultRequestHeaders.Add("X-Forwarded-Proto", "http");
+        client.DefaultRequestHeaders.Add("X-Forwarded-Prefix", "/untrusted");
+
+        using var response = await client.GetAsync("/dingtalk/.well-known/oauth-authorization-server");
+
+        response.EnsureSuccessStatusCode();
+        using var body = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = body.RootElement;
+
+        Assert.Equal("https://auth.example.com/subroute/dingtalk", root.GetProperty("issuer").GetString());
+        Assert.Equal("https://auth.example.com/subroute/dingtalk/authorize", root.GetProperty("authorization_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/subroute/dingtalk/token", root.GetProperty("token_endpoint").GetString());
+        Assert.Equal("https://auth.example.com/subroute/dingtalk/userinfo", root.GetProperty("userinfo_endpoint").GetString());
     }
 
     [Fact]
@@ -79,7 +82,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         });
         var redirectUri = "https://keycloak.example.com/realms/demo/broker/dingtalk/endpoint";
         var requestUri = QueryHelpers.AddQueryString(
-            "/authorize",
+            "/dingtalk/authorize",
             new Dictionary<string, string?>
             {
                 ["response_type"] = "code",
@@ -93,7 +96,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         var location = response.Headers.Location;
         Assert.NotNull(location);
-        Assert.Equal("login.dingtalk.test", location.Host);
+        Assert.Equal("login.dingtalk.com", location.Host);
         Assert.Equal("/oauth2/auth", location.AbsolutePath);
 
         var query = QueryHelpers.ParseQuery(location.Query);
@@ -113,7 +116,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         });
         var redirectUri = "https://keycloak.example.com/callback";
         var requestUri = QueryHelpers.AddQueryString(
-            "/authorize",
+            "/dingtalk/authorize",
             new Dictionary<string, string?>
             {
                 ["response_type"] = "token",
@@ -137,7 +140,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync(
-            "/token",
+            "/dingtalk/token",
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["grant_type"] = "client_credentials",
@@ -156,7 +159,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
         using var client = factory.CreateClient();
 
         using var response = await client.PostAsync(
-            "/token",
+            "/dingtalk/token",
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["grant_type"] = "authorization_code",
@@ -173,7 +176,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
     public async Task Token_AcceptsClientCredentialsFromBasicAuth()
     {
         using var client = factory.CreateClient();
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/token")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/dingtalk/token")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -199,7 +202,7 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
     {
         using var client = factory.CreateClient();
 
-        using var response = await client.GetAsync("/userinfo");
+        using var response = await client.GetAsync("/dingtalk/userinfo");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -210,19 +213,19 @@ public sealed class OAuthEndpointsTests(OAuthBridgeFactory factory) : IClassFixt
 
 public sealed class OAuthBridgeFactory : WebApplicationFactory<Program>
 {
-    private readonly string? _publicEndpointPrefix;
+    private readonly string _baseUrl = "https://auth.example.com";
 
     public OAuthBridgeFactory()
     {
     }
 
-    private OAuthBridgeFactory(string publicEndpointPrefix)
+    private OAuthBridgeFactory(string baseUrl)
     {
-        _publicEndpointPrefix = publicEndpointPrefix;
+        _baseUrl = baseUrl;
     }
 
-    public OAuthBridgeFactory WithPublicEndpointPrefix(string publicEndpointPrefix) =>
-        new(publicEndpointPrefix);
+    public OAuthBridgeFactory WithBaseUrl(string baseUrl) =>
+        new(baseUrl);
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -230,9 +233,7 @@ public sealed class OAuthBridgeFactory : WebApplicationFactory<Program>
         {
             configuration.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["OAuth2Bridge:PublicEndpointPrefix"] = _publicEndpointPrefix,
-                ["OAuth2Bridge:AuthorizeEndpoint"] = "https://login.dingtalk.test/oauth2/auth",
-                ["OAuth2Bridge:DingTalkScope"] = "openid"
+                ["BaseUrl"] = _baseUrl
             });
         });
     }
