@@ -8,6 +8,7 @@ public sealed class FeishuOAuthProvider(HttpClient client) : IOAuthProvider
 {
     private const string AuthorizeEndpoint = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
     private const string TokenEndpoint = "https://accounts.feishu.cn/oauth/v3/token";
+    private const string PkceTokenEndpoint = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
     private const string UserInfoEndpoint = "https://open.feishu.cn/open-apis/authen/v1/user_info";
 
     public string Name => "feishu";
@@ -50,7 +51,10 @@ public sealed class FeishuOAuthProvider(HttpClient client) : IOAuthProvider
             ["redirect_uri"] = request.RedirectUri
         };
         if (!string.IsNullOrEmpty(request.CodeVerifier)) parameters["code_verifier"] = request.CodeVerifier;
-        using var response = await client.PostAsJsonAsync(TokenEndpoint, parameters, cancellationToken);
+        // Feishu v3 rejects valid native PKCE with code 20049. Select v2 before redemption;
+        // never retry a one-time code or drop its verifier after an upstream rejection.
+        var endpoint = string.IsNullOrEmpty(request.CodeVerifier) ? TokenEndpoint : PkceTokenEndpoint;
+        using var response = await client.PostAsJsonAsync(endpoint, parameters, cancellationToken);
         using var document = await ReadResponseAsync(response, "invalid_grant", cancellationToken);
         var root = document.RootElement;
         var accessToken = String(root, "access_token");

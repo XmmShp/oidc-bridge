@@ -469,7 +469,7 @@ public sealed class OidcTests
             {
                 Interlocked.Increment(ref TokenCalls);
                 using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
-                var feishu = request.RequestUri!.Host == "accounts.feishu.cn";
+                var feishu = request.RequestUri!.Host is "accounts.feishu.cn" or "open.feishu.cn";
                 var code = body.RootElement.GetProperty("code").GetString()!;
                 if (body.RootElement.GetProperty(feishu ? "client_secret" : "clientSecret").GetString() != "secret")
                     return Json("{\"error\":\"invalid_client\"}", 401);

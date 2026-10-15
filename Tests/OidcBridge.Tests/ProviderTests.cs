@@ -74,7 +74,7 @@ public sealed class ProviderTests
 
     [Theory]
     [InlineData("dingtalk", "https://api.dingtalk.com/v1.0/oauth2/userAccessToken")]
-    [InlineData("feishu", "https://accounts.feishu.cn/oauth/v3/token")]
+    [InlineData("feishu", "https://open.feishu.cn/open-apis/authen/v2/oauth/token")]
     [InlineData("github", "https://github.com/login/oauth/access_token")]
     [InlineData("gitee", "https://gitee.com/oauth/token")]
     [InlineData("qq", "https://graph.qq.com/oauth2.0/token")]
@@ -132,6 +132,26 @@ public sealed class ProviderTests
         var error = await Assert.ThrowsAsync<OAuthProviderException>(() => fixture.Provider.ExchangeAuthorizationCodeAsync(Token(), default));
         Assert.Equal(expectedError, error.Error);
         Assert.DoesNotContain("private-data", error.Message);
+    }
+
+    [Theory]
+    [InlineData("", "https://accounts.feishu.cn/oauth/v3/token")]
+    [InlineData("native-verifier", "https://open.feishu.cn/open-apis/authen/v2/oauth/token")]
+    public async Task Feishu_SelectsPkceCompatibleEndpointBeforeRedeemingCode(string verifier, string endpoint)
+    {
+        var calls = 0;
+        using var fixture = new ProviderFixture("feishu", async request =>
+        {
+            calls++;
+            Assert.Equal(endpoint, request.RequestUri!.AbsoluteUri);
+            var body = JsonSerializer.Deserialize<Dictionary<string, string>>(await request.Content!.ReadAsStringAsync())!;
+            Assert.Equal("https://auth.example/provider/callback", body["redirect_uri"]);
+            if (verifier.Length > 0) Assert.Equal(verifier, body["code_verifier"]);
+            else Assert.False(body.ContainsKey("code_verifier"));
+            return Json("{\"access_token\":\"native-access\",\"expires_in\":3600}");
+        });
+        Assert.Equal("native-access", (await fixture.Provider.ExchangeAuthorizationCodeAsync(Token(verifier), default)).AccessToken);
+        Assert.Equal(1, calls);
     }
 
     [Theory]
