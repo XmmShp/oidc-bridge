@@ -104,11 +104,14 @@ public sealed class FeishuOAuthProvider(HttpClient client) : IOAuthProvider
             root.TryGetProperty("code", out var code) && code.ToString() != "0")
         {
             var error = String(root, "error");
+            var diagnostic = root.TryGetProperty("code", out var nativeCode) &&
+                nativeCode.ValueKind == JsonValueKind.Number && nativeCode.TryGetInt64(out var numericCode)
+                ? $" (upstream code {numericCode})" : string.Empty;
             document.Dispose();
             if (error is "server_error" or "temporarily_unavailable")
                 throw new HttpRequestException("Feishu is unavailable.");
             throw new OAuthProviderException(error is "invalid_client" or "invalid_grant" or "invalid_scope" or "invalid_request" ? error : defaultError,
-                defaultError == "invalid_token" ? "Feishu rejected the access token." : "Feishu rejected the token request.");
+                (defaultError == "invalid_token" ? "Feishu rejected the access token" : "Feishu rejected the token request") + diagnostic + ".");
         }
         return document;
     }

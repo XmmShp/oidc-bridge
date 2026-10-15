@@ -135,6 +135,17 @@ public sealed class ProviderTests
     }
 
     [Theory]
+    [InlineData("{\"code\":20003,\"error_description\":\"private-data\"}", "Feishu rejected the token request (upstream code 20003).")]
+    [InlineData("{\"code\":\"private-data\",\"error\":\"invalid_grant\"}", "Feishu rejected the token request.")]
+    public async Task Feishu_OnlyExposesNumericFailureCodes(string body, string expectedMessage)
+    {
+        using var fixture = new ProviderFixture("feishu", _ => Task.FromResult(Json(body)));
+        var error = await Assert.ThrowsAsync<OAuthProviderException>(() => fixture.Provider.ExchangeAuthorizationCodeAsync(Token(), default));
+        Assert.Equal(expectedMessage, error.Message);
+        Assert.DoesNotContain("private-data", error.Message);
+    }
+
+    [Theory]
     [InlineData("dingtalk")]
     [InlineData("feishu")]
     [InlineData("github")]
