@@ -136,6 +136,8 @@ The protocol layer owns OIDC validation and issuance; `OAuthProviderRegistry` re
 
 No JSAPI, mini-program, or enterprise silent-login flow is provided. WeChat website and Official Account adapters remain unsupported; `/wechat/*` and `/wechat-mp/*` return HTTP 404.
 
+For a DingTalk internal application, set `DingTalkOrganization:CorpId` and `DingTalkOrganization:EmailDomain` together to enable enterprise sign-in. The bridge requests the organization scope and checks that the organization selected during user authorization matches the configured ID. The internal application needs read permissions for the consenting user's profile, organization members and their email. The bridge uses the application's existing credentials during token exchange to match the authenticated subject to an active organization member. Only the directory's `org_email` in the specified enterprise domain is emitted as a verified email in the ID token.
+
 Upstream transport failures, rate limits, and malformed responses produce 502; rejected bearer tokens receive a challenge. Upstream error bodies are not returned. Typed HttpClients disable URL logging, cookie storage, and automatic redirects because some platform APIs require credentials in query parameters.
 
 ### Platforms to integrate directly

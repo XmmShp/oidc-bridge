@@ -169,9 +169,9 @@ internal static partial class OidcEndpoints
         if (transaction.CodeChallenge.Length > 0 && (!ValidVerifier(verifier) || !FixedEquals(Hash(verifier), transaction.CodeChallenge)))
             return Results.BadRequest(new OAuthError("invalid_grant", "PKCE verification failed."));
         // Redeem only here: upstream enforces one-time use, including across independent bridge instances.
-        var native = await provider.ExchangeAuthorizationCodeAsync(new TokenRequest(clientId, clientSecret,
-            envelope.UpstreamCode, $"{issuer}/callback", transaction.UpstreamVerifier), ct);
-        var user = JsonSerializer.SerializeToElement(await provider.GetUserInfoAsync(native.AccessToken, ct));
+        var exchange = new TokenRequest(clientId, clientSecret, envelope.UpstreamCode, $"{issuer}/callback", transaction.UpstreamVerifier);
+        var native = await provider.ExchangeAuthorizationCodeAsync(exchange, ct);
+        var user = JsonSerializer.SerializeToElement(await provider.GetAuthorizationProfileAsync(native, exchange, ct));
         if (!user.TryGetProperty("sub", out var sub) || sub.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(sub.GetString()))
             throw new JsonException("Missing upstream subject.");
         var subject = sub.GetString()!;

@@ -12,6 +12,8 @@ public interface IOAuthProvider
     string BuildAuthorizationUrl(AuthorizationRequest request);
     Task<ProviderToken> ExchangeAuthorizationCodeAsync(TokenRequest request, CancellationToken cancellationToken);
     Task<object> GetUserInfoAsync(string accessToken, CancellationToken cancellationToken);
+    Task<object> GetAuthorizationProfileAsync(ProviderToken token, TokenRequest request, CancellationToken cancellationToken) =>
+        GetUserInfoAsync(token.AccessToken, cancellationToken);
 }
 
 public sealed record AuthorizationRequest(string ClientId, string RedirectUri, string State, string Scope,

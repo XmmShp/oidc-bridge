@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Configuration;
 using OidcBridge.Providers;
 
 namespace OidcBridge.Tests;
@@ -10,12 +11,13 @@ internal sealed class ProviderFixture : IDisposable
     private readonly HttpClient _client;
     public IOAuthProvider Provider { get; }
 
-    public ProviderFixture(string provider, Func<HttpRequestMessage, Task<HttpResponseMessage>>? send = null)
+    public ProviderFixture(string provider, Func<HttpRequestMessage, Task<HttpResponseMessage>>? send = null,
+        IConfiguration? configuration = null)
     {
         _client = new HttpClient(new StubHandler(send ?? (_ => throw new InvalidOperationException("Unexpected upstream request."))));
         Provider = provider switch
         {
-            "dingtalk" => new DingTalkOAuthProvider(_client), "feishu" => new FeishuOAuthProvider(_client),
+            "dingtalk" => new DingTalkOAuthProvider(_client, configuration), "feishu" => new FeishuOAuthProvider(_client),
             "github" => new GitHubOAuthProvider(_client), "gitee" => new GiteeOAuthProvider(_client),
             "qq" => new QqOAuthProvider(_client), "weibo" => new WeiboOAuthProvider(_client),
             _ => throw new ArgumentOutOfRangeException(nameof(provider))
