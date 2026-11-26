@@ -121,6 +121,6 @@ public sealed class OidcService : IDisposable
 }
 
 internal sealed record OidcTransaction(string ClientId, string RedirectUri, string State, string Scope, string Nonce,
-    string CodeChallenge, string CorrelationId, string CorrelationHash, string UpstreamVerifier);
+    string CodeChallenge, string CorrelationId, string UpstreamVerifier);
 internal sealed record OidcCode(OidcTransaction Transaction, string UpstreamCode);
 internal sealed record OidcAccess(string ClientId, string UpstreamToken, string Subject, string Scope);

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.WebUtilities;
 using OidcBridge.Providers;
 using static OidcBridge.OAuthRequestHelpers;
@@ -9,6 +10,8 @@ namespace OidcBridge.Oidc;
 
 internal static partial class OidcEndpoints
 {
+    private static readonly ChunkingCookieManager CorrelationCookies = new() { ChunkSize = 3800 };
+
     public static void MapOidcEndpoints(this WebApplication app)
     {
         app.MapGet("/{provider}/.well-known/openid-configuration", Metadata);
@@ -106,18 +109,22 @@ internal static partial class OidcEndpoints
         if (challenge.Length > 0 ? method != "S256" || !IsBase64Url(challenge, 43) : method.Length > 0)
             return Error("invalid_request", "PKCE requires a valid S256 challenge and code_challenge_method=S256.");
         var issuer = Issuer(providers, provider);
-        var correlation = RandomToken();
+        var correlationId = RandomToken();
         var transaction = new OidcTransaction(client.ClientId, redirect, state, string.Join(' ', scopes),
-            query["nonce"].ToString(), challenge, RandomToken(), Hash(correlation),
+            query["nonce"].ToString(), challenge, correlationId,
             provider.CodeChallengeMethods.Contains("S256") ? RandomToken() : string.Empty);
         try
         {
+            var cookieName = CookieName(issuer, correlationId);
+            var ticket = oidc.Seal(issuer, "state", transaction, TimeSpan.FromMinutes(10));
+            if (cookieName.Length + ticket.Length > 7600)
+                return Error("invalid_request", "Authorization parameters exceed the supported browser cookie size.");
             var url = provider.BuildAuthorizationUrl(new AuthorizationRequest(client.ClientId, $"{issuer}/callback",
-                oidc.Seal(issuer, "state", transaction, TimeSpan.FromMinutes(10)), client.UpstreamScope,
+                correlationId, client.UpstreamScope,
                 transaction.UpstreamVerifier.Length > 0 ? Hash(transaction.UpstreamVerifier) : string.Empty,
                 transaction.UpstreamVerifier.Length > 0 ? "S256" : string.Empty, prompt));
             if (url.Length > 8000) return Error("invalid_request", "Authorization parameters exceed the supported URL size.");
-            response.Cookies.Append(CookieName(issuer, transaction), correlation, CookieOptions(issuer, TimeSpan.FromMinutes(10)));
+            CorrelationCookies.AppendResponseCookie(request.HttpContext, cookieName, ticket, CookieOptions(issuer, TimeSpan.FromMinutes(10)));
             return Results.Redirect(url);
         }
         catch (OAuthProviderException ex) { return Error(ex.Error, ex.Message); }
@@ -131,14 +138,19 @@ internal static partial class OidcEndpoints
         var issuer = Issuer(providers, provider);
         if (request.Query.Any(parameter => parameter.Value.Count != 1))
             return Results.BadRequest(new OAuthError("invalid_request", "Duplicate callback parameters."));
-        var transaction = await oidc.UnsealAsync<OidcTransaction>(issuer, "state", request.Query["state"].ToString());
-        if (transaction is null || oidc.FindClient(provider.Name, transaction.ClientId) is not { } client ||
+        var correlationId = request.Query["state"].ToString();
+        if (!IsBase64Url(correlationId, 43))
+            return Results.BadRequest(new OAuthError("invalid_request", "Invalid authorization state."));
+        var cookieName = CookieName(issuer, correlationId);
+        var ticket = CorrelationCookies.GetRequestCookie(request.HttpContext, cookieName);
+        if (ticket is null)
+            return Results.BadRequest(new OAuthError("invalid_request", "Missing browser correlation."));
+        var transaction = await oidc.UnsealAsync<OidcTransaction>(issuer, "state", ticket);
+        if (transaction is null || !FixedEquals(transaction.CorrelationId, correlationId) ||
+            oidc.FindClient(provider.Name, transaction.ClientId) is not { } client ||
             !client.RedirectUris.Contains(transaction.RedirectUri))
             return Results.BadRequest(new OAuthError("invalid_request", "Invalid or expired authorization state."));
-        var cookieName = CookieName(issuer, transaction);
-        if (!request.Cookies.TryGetValue(cookieName, out var correlation) || !FixedEquals(Hash(correlation), transaction.CorrelationHash))
-            return Results.BadRequest(new OAuthError("invalid_request", "Missing or invalid browser correlation."));
-        response.Cookies.Delete(cookieName, CookieOptions(issuer, null));
+        CorrelationCookies.DeleteCookie(request.HttpContext, cookieName, CookieOptions(issuer, null));
         var upstreamCode = FirstNonEmpty(request.Query["code"], request.Query["authCode"], request.Query["auth_code"]);
         var upstreamError = request.Query["error"].ToString();
         if (!string.IsNullOrEmpty(upstreamError) || string.IsNullOrWhiteSpace(upstreamCode))
@@ -208,8 +220,8 @@ internal static partial class OidcEndpoints
         response.Headers["Referrer-Policy"] = "no-referrer";
     }
 
-    private static string CookieName(string issuer, OidcTransaction transaction) =>
-        $"{(new Uri(issuer).Scheme == "https" ? "__Secure-" : string.Empty)}oidc-bridge.{new Uri(issuer).Segments.Last().TrimEnd('/')}.{transaction.CorrelationId}";
+    private static string CookieName(string issuer, string correlationId) =>
+        $"{(new Uri(issuer).Scheme == "https" ? "__Secure-" : string.Empty)}oidc-bridge.{new Uri(issuer).Segments.Last().TrimEnd('/')}.{correlationId}";
     private static CookieOptions CookieOptions(string issuer, TimeSpan? lifetime) => new()
     {
         HttpOnly = true, Secure = new Uri(issuer).Scheme == "https", SameSite = SameSiteMode.Lax,

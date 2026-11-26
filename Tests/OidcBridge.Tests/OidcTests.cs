@@ -172,6 +172,11 @@ public sealed class OidcTests
         wrongRequest.Headers.Add("Cookie", flow.Cookie.Split('=')[0] + "=wrong");
         using var wrong = await client.SendAsync(wrongRequest);
         Assert.Equal(HttpStatusCode.BadRequest, wrong.StatusCode);
+        var parallel = await Begin(client, "dingtalk");
+        using var mismatchedRequest = new HttpRequestMessage(HttpMethod.Get, callback);
+        mismatchedRequest.Headers.Add("Cookie", flow.Cookie.Split('=')[0] + "=" + parallel.Cookie.Split('=', 2)[1]);
+        using var mismatched = await client.SendAsync(mismatchedRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, mismatched.StatusCode);
         var state = QueryHelpers.ParseQuery(flow.Location.Query)["state"].ToString();
         using var tamperedRequest = new HttpRequestMessage(HttpMethod.Get, QueryHelpers.AddQueryString("/dingtalk/callback",
             new Dictionary<string, string?> { ["state"] = state + "x", ["code"] = "native-code" }));
@@ -182,6 +187,30 @@ public sealed class OidcTests
         duplicateRequest.Headers.Add("Cookie", flow.Cookie);
         using var duplicate = await client.SendAsync(duplicateRequest);
         Assert.Equal(HttpStatusCode.BadRequest, duplicate.StatusCode);
+    }
+
+    [Fact]
+    public async Task Authorization_SendsCompactUpstreamStateWhilePreservingTheCompleteClientState()
+    {
+        using var factory = new OidcFactory();
+        using var client = Client(factory);
+        var parameters = Parameters();
+        var clientState = new string('s', 1500);
+        parameters["state"] = clientState;
+        using var response = await client.GetAsync(QueryHelpers.AddQueryString("/dingtalk/authorize", parameters));
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        var location = response.Headers.Location!;
+        var upstreamState = QueryHelpers.ParseQuery(location.Query)["state"].ToString();
+        Assert.Matches("^[A-Za-z0-9_-]{43}$", upstreamState);
+        Assert.DoesNotContain(clientState, location.AbsoluteUri);
+        var cookies = response.Headers.GetValues("Set-Cookie").ToArray();
+        Assert.True(cookies.Length > 1);
+        Assert.All(cookies, cookie => Assert.True(cookie.Length < 4096));
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/dingtalk/callback?state={upstreamState}&code=native-code");
+        request.Headers.Add("Cookie", string.Join("; ", cookies.Select(cookie => cookie.Split(';')[0])));
+        using var callback = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Redirect, callback.StatusCode);
+        Assert.Equal(clientState, QueryHelpers.ParseQuery(callback.Headers.Location!.Query)["state"]);
     }
 
     [Fact]
