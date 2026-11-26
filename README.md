@@ -140,6 +140,8 @@ For a DingTalk internal application, set `DingTalkOrganization:CorpId` and `Ding
 
 Set `DingTalkOrganization:IncludeDirectoryEmail` to `true` to let clients request the member's ordinary directory email through the `email` scope when a matching enterprise mailbox is unavailable. The bridge emits this address as `dingtalk_directory_email` in the signed ID token. A client can explicitly trust the organization directory for account matching. Control of the mailbox is unverified.
 
+After independently verifying a member controls their directory mailbox, an operator can record that verification in `DingTalkOrganization:VerifiedDirectoryEmails` using the DingTalk application `ClientId`, the member's DingTalk `Subject` (union ID) and the exact verified `Email`. The bridge emits standard `email` and `email_verified: true` claims only if the authenticated user is still an active member of the configured organization and the current directory address matches that record for the requesting client. Changing an address requires a fresh verification. Remove outdated bindings when mailbox ownership changes. Keep these records in restricted deployment configuration.
+
 Upstream transport failures, rate limits, and malformed responses produce 502; rejected bearer tokens receive a challenge. Upstream error bodies are not returned. Typed HttpClients disable URL logging, cookie storage, and automatic redirects because some platform APIs require credentials in query parameters.
 
 ### Platforms to integrate directly

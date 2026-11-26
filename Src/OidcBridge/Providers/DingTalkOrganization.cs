@@ -4,7 +4,8 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace OidcBridge.Providers;
 
-internal sealed class DingTalkOrganization(HttpClient client, string corpId, string emailDomain, bool includeDirectoryEmail)
+internal sealed class DingTalkOrganization(HttpClient client, string corpId, string emailDomain, bool includeDirectoryEmail,
+    IReadOnlyDictionary<(string ClientId, string Subject), string> verifiedDirectoryEmails)
 {
     public string CorpId { get; } = corpId;
 
@@ -21,8 +22,23 @@ internal sealed class DingTalkOrganization(HttpClient client, string corpId, str
         {
             throw new InvalidOperationException("DingTalk organization mode requires a corporation ID and an enterprise email domain.");
         }
-        return new DingTalkOrganization(client, expectedCorpId, trustedDomain,
-            configuration!.GetValue<bool>("DingTalkOrganization:IncludeDirectoryEmail"));
+        var directory = configuration!.GetSection("DingTalkOrganization");
+        var includeDirectoryEmail = directory.GetValue<bool>("IncludeDirectoryEmail");
+        var byIdentity = new Dictionary<(string ClientId, string Subject), string>();
+        var addresses = new HashSet<(string ClientId, string Email)>();
+        foreach (var entry in directory.GetSection("VerifiedDirectoryEmails").GetChildren())
+        {
+            var clientId = entry["ClientId"];
+            var subject = entry["Subject"];
+            var email = entry["Email"];
+            if (!includeDirectoryEmail || string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(subject) ||
+                !TryReadMailbox(email, out var mailbox) || !addresses.Add((clientId, mailbox.Address.ToUpperInvariant())) ||
+                !byIdentity.TryAdd((clientId, subject), mailbox.Address))
+            {
+                throw new InvalidOperationException("DingTalk verified directory emails require enabled directory lookup, unique client and subject bindings, and one subject per address in each client.");
+            }
+        }
+        return new DingTalkOrganization(client, expectedCorpId, trustedDomain, includeDirectoryEmail, byIdentity);
     }
 
     internal async Task<DirectoryEmail> ReadEmailAsync(TokenRequest exchange, string unionId, CancellationToken cancellationToken)
@@ -56,7 +72,9 @@ internal sealed class DingTalkOrganization(HttpClient client, string corpId, str
         }
         if (includeDirectoryEmail && TryReadMailbox(ReadString(member, "email"), out var directory))
         {
-            return new DirectoryEmail(directory.Address, Verified: false);
+            var verified = verifiedDirectoryEmails.TryGetValue((exchange.ClientId, unionId), out var address) &&
+                StringComparer.Ordinal.Equals(directory.Address, address);
+            return new DirectoryEmail(directory.Address, verified);
         }
         if (string.IsNullOrWhiteSpace(mailbox))
         {
