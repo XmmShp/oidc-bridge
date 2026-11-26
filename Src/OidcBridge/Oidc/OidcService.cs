@@ -109,7 +109,7 @@ public sealed class OidcService : IDisposable
         var scopes = scope.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (scopes.Contains("profile")) allowed.UnionWith(["name", "family_name", "given_name", "middle_name", "nickname",
             "preferred_username", "profile", "picture", "website", "gender", "birthdate", "zoneinfo", "locale", "updated_at"]);
-        if (scopes.Contains("email")) allowed.UnionWith(["email", "email_verified"]);
+        if (scopes.Contains("email")) allowed.UnionWith(["email", "email_verified", "dingtalk_directory_email"]);
         if (scopes.Contains("phone")) allowed.UnionWith(["phone_number", "phone_number_verified"]);
         return user.EnumerateObject().Where(property => allowed.Contains(property.Name) &&
                 property.Value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined))

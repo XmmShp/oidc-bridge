@@ -58,9 +58,9 @@ public sealed class DingTalkOAuthProvider(HttpClient client, IConfiguration? con
     {
         using var document = await ReadUserAsync(token.AccessToken, cancellationToken);
         var user = document.RootElement;
-        var verifiedEmail = organization is null ? null :
-            await organization.ReadVerifiedEmailAsync(request, Subject(user), cancellationToken);
-        return MapUser(user, verifiedEmail);
+        var email = organization is null ? null :
+            await organization.ReadEmailAsync(request, Subject(user), cancellationToken);
+        return MapUser(user, email);
     }
 
     public async Task<object> GetUserInfoAsync(string accessToken, CancellationToken cancellationToken)
@@ -80,7 +80,7 @@ public sealed class DingTalkOAuthProvider(HttpClient client, IConfiguration? con
     private static string Subject(JsonElement user) => String(user, "unionId") is { Length: > 0 } value && !string.IsNullOrWhiteSpace(value)
         ? value : throw new JsonException("Missing DingTalk subject.");
 
-    private object MapUser(JsonElement user, string? verifiedEmail)
+    private object MapUser(JsonElement user, DingTalkOrganization.DirectoryEmail? email)
     {
         var subject = Subject(user);
         return new
@@ -89,8 +89,10 @@ public sealed class DingTalkOAuthProvider(HttpClient client, IConfiguration? con
             name = OAuthRequestHelpers.FirstNonEmpty(String(user, "nick"), subject),
             picture = String(user, "avatarUrl"),
             phone_number = String(user, "mobile"),
-            email = organization is null ? OAuthRequestHelpers.FirstNonEmpty(String(user, "email"), String(user, "loginEmail")) : verifiedEmail,
-            email_verified = verifiedEmail is null ? (bool?)null : true,
+            email = organization is null ? OAuthRequestHelpers.FirstNonEmpty(String(user, "email"), String(user, "loginEmail"))
+                : email is { Verified: true } ? email.Address : null,
+            email_verified = email is { Verified: true } ? true : (bool?)null,
+            dingtalk_directory_email = email is { Verified: false } ? email.Address : null,
             avatarUrl = String(user, "avatarUrl"),
             loginEmail = String(user, "loginEmail"),
             mobile = String(user, "mobile"),

@@ -138,6 +138,8 @@ No JSAPI, mini-program, or enterprise silent-login flow is provided. WeChat webs
 
 For a DingTalk internal application, set `DingTalkOrganization:CorpId` and `DingTalkOrganization:EmailDomain` together to enable enterprise sign-in. The bridge requests the organization scope and checks that the organization selected during user authorization matches the configured ID. The internal application needs read permissions for the consenting user's profile, organization members and their email. The bridge uses the application's existing credentials during token exchange to match the authenticated subject to an active organization member. Only the directory's `org_email` in the specified enterprise domain is emitted as a verified email in the ID token.
 
+Set `DingTalkOrganization:IncludeDirectoryEmail` to `true` to let clients request the member's ordinary directory email through the `email` scope when a matching enterprise mailbox is unavailable. The bridge emits this address as `dingtalk_directory_email` in the signed ID token. A client can explicitly trust the organization directory for account matching. Control of the mailbox is unverified.
+
 Upstream transport failures, rate limits, and malformed responses produce 502; rejected bearer tokens receive a challenge. Upstream error bodies are not returned. Typed HttpClients disable URL logging, cookie storage, and automatic redirects because some platform APIs require credentials in query parameters.
 
 ### Platforms to integrate directly

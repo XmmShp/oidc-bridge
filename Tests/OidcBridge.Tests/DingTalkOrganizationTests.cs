@@ -22,12 +22,16 @@ public sealed class DingTalkOrganizationTests
     }
 
     [Theory]
-    [InlineData("member@enterprise.example", "member-subject", true, true)]
-    [InlineData("member@elsewhere.example", "member-subject", true, false)]
-    [InlineData("member@enterprise.example", "other-subject", true, false)]
-    [InlineData("member@enterprise.example", "member-subject", false, false)]
-    [InlineData(null, "member-subject", true, false)]
-    public async Task OnlyTheCurrentDirectoryMembersOrganizationMailboxIsVerified(string? mailbox, string unionId, bool active, bool allowed)
+    [InlineData("member@enterprise.example", "member-subject", true, false, true, true)]
+    [InlineData("member@elsewhere.example", "member-subject", true, false, false, false)]
+    [InlineData("member@enterprise.example", "other-subject", true, true, false, false)]
+    [InlineData("member@enterprise.example", "member-subject", false, true, false, false)]
+    [InlineData(null, "member-subject", true, false, false, false)]
+    [InlineData(null, "member-subject", true, true, true, false)]
+    [InlineData("member@elsewhere.example", "member-subject", true, true, true, false)]
+    [InlineData("member@enterprise.example", "member-subject", true, true, true, true)]
+    public async Task OnlyTheCurrentActiveMemberReceivesDirectoryClaims(
+        string? mailbox, string unionId, bool active, bool includeDirectoryEmail, bool allowed, bool verified)
     {
         using var fixture = new ProviderFixture("dingtalk", request =>
         {
@@ -35,7 +39,7 @@ public sealed class DingTalkOrganizationTests
             var response = path switch
             {
                 "/v1.0/oauth2/userAccessToken" => """{"accessToken":"user-token","expireIn":3600,"corpId":"test-org"}""",
-                "/v1.0/contact/users/me" => """{"unionId":"member-subject","email":"personal@example.net"}""",
+                "/v1.0/contact/users/me" => """{"unionId":"member-subject","email":"profile@example.net"}""",
                 "/v1.0/oauth2/accessToken" => """{"accessToken":"app-token"}""",
                 "/topapi/user/getbyunionid" => """{"errcode":0,"result":{"userid":"member-id"}}""",
                 "/topapi/v2/user/get" => JsonSerializer.Serialize(new
@@ -43,7 +47,7 @@ public sealed class DingTalkOrganizationTests
                 _ => throw new InvalidOperationException("Unexpected provider request.")
             };
             return Task.FromResult(Json(response));
-        }, Organization());
+        }, Organization(includeDirectoryEmail));
 
         var token = await fixture.Provider.ExchangeAuthorizationCodeAsync(Token(), default);
         if (!allowed)
@@ -53,16 +57,19 @@ public sealed class DingTalkOrganizationTests
         }
 
         var profile = JsonSerializer.SerializeToElement(await fixture.Provider.GetAuthorizationProfileAsync(token, Token(), default));
-        Assert.Equal(mailbox, profile.GetProperty("email").GetString());
-        Assert.True(profile.GetProperty("email_verified").GetBoolean());
+        Assert.Equal(verified ? mailbox : null, profile.GetProperty("email").GetString());
+        Assert.Equal(verified ? JsonValueKind.True : JsonValueKind.Null, profile.GetProperty("email_verified").ValueKind);
+        Assert.Equal(verified ? null : "personal@example.net", profile.GetProperty("dingtalk_directory_email").GetString());
         var userInfo = JsonSerializer.SerializeToElement(await fixture.Provider.GetUserInfoAsync(token.AccessToken, default));
         Assert.Equal(JsonValueKind.Null, userInfo.GetProperty("email").ValueKind);
+        Assert.Equal(JsonValueKind.Null, userInfo.GetProperty("dingtalk_directory_email").ValueKind);
     }
 
-    private static IConfiguration Organization() => new ConfigurationBuilder().AddInMemoryCollection(
+    private static IConfiguration Organization(bool includeDirectoryEmail = false) => new ConfigurationBuilder().AddInMemoryCollection(
         new Dictionary<string, string?>
         {
             ["DingTalkOrganization:CorpId"] = "test-org",
-            ["DingTalkOrganization:EmailDomain"] = "enterprise.example"
+            ["DingTalkOrganization:EmailDomain"] = "enterprise.example",
+            ["DingTalkOrganization:IncludeDirectoryEmail"] = includeDirectoryEmail.ToString()
         }).Build();
 }

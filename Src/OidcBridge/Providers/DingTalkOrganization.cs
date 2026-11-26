@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace OidcBridge.Providers;
 
-internal sealed class DingTalkOrganization(HttpClient client, string corpId, string emailDomain)
+internal sealed class DingTalkOrganization(HttpClient client, string corpId, string emailDomain, bool includeDirectoryEmail)
 {
     public string CorpId { get; } = corpId;
 
@@ -21,10 +21,11 @@ internal sealed class DingTalkOrganization(HttpClient client, string corpId, str
         {
             throw new InvalidOperationException("DingTalk organization mode requires a corporation ID and an enterprise email domain.");
         }
-        return new DingTalkOrganization(client, expectedCorpId, trustedDomain);
+        return new DingTalkOrganization(client, expectedCorpId, trustedDomain,
+            configuration!.GetValue<bool>("DingTalkOrganization:IncludeDirectoryEmail"));
     }
 
-    internal async Task<string> ReadVerifiedEmailAsync(TokenRequest exchange, string unionId, CancellationToken cancellationToken)
+    internal async Task<DirectoryEmail> ReadEmailAsync(TokenRequest exchange, string unionId, CancellationToken cancellationToken)
     {
         var application = await PostAsync("https://api.dingtalk.com/v1.0/oauth2/accessToken",
             new { appKey = exchange.ClientId, appSecret = exchange.ClientSecret }, cancellationToken);
@@ -49,18 +50,25 @@ internal sealed class DingTalkOrganization(HttpClient client, string corpId, str
         {
             throw Reject("DingTalk did not confirm an active member with the authorized identity.");
         }
+        if (TryReadMailbox(mailbox, out var enterprise) && StringComparer.OrdinalIgnoreCase.Equals(enterprise.Host, emailDomain))
+        {
+            return new DirectoryEmail(enterprise.Address, Verified: true);
+        }
+        if (includeDirectoryEmail && TryReadMailbox(ReadString(member, "email"), out var directory))
+        {
+            return new DirectoryEmail(directory.Address, Verified: false);
+        }
         if (string.IsNullOrWhiteSpace(mailbox))
         {
             throw Reject("DingTalk directory did not return an enterprise mailbox for this member.");
         }
-        if (!MailAddress.TryCreate(mailbox, out var email) || email.Address != mailbox ||
-            !StringComparer.OrdinalIgnoreCase.Equals(email.Host, emailDomain))
-        {
-            throw Reject("DingTalk enterprise mailbox does not match the configured email domain.");
-        }
-
-        return email.Address;
+        throw Reject("DingTalk enterprise mailbox does not match the configured email domain.");
     }
+
+    private static bool TryReadMailbox(string? mailbox, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out MailAddress? result) =>
+        MailAddress.TryCreate(mailbox, out result) && result.Address == mailbox;
+
+    internal sealed record DirectoryEmail(string Address, bool Verified);
 
     private async Task<JsonElement> PostAsync(string url, object payload, CancellationToken cancellationToken)
     {
