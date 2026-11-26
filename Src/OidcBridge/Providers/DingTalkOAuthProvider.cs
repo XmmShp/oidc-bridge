@@ -4,15 +4,16 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace OidcBridge.Providers;
 
-public sealed class DingTalkOAuthProvider(HttpClient client) : IOAuthProvider
+public sealed class DingTalkOAuthProvider(HttpClient client, IConfiguration? configuration = null) : IOAuthProvider
 {
     private const string AuthorizeEndpoint = "https://login.dingtalk.com/oauth2/auth";
     private const string TokenEndpoint = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken";
     private const string UserInfoEndpoint = "https://api.dingtalk.com/v1.0/contact/users/me";
+    private readonly DingTalkOrganization? organization = DingTalkOrganization.FromConfiguration(client, configuration);
 
     public string Name => "dingtalk";
     public IReadOnlyList<string> Scopes => ["openid", "corpid"];
-    public IReadOnlyList<string> Claims => ["sub", "name", "picture", "phone_number", "email", "avatarUrl", "loginEmail", "mobile", "nick", "openId", "stateCode", "unionId", "visitor"];
+    public IReadOnlyList<string> Claims => ["sub", "name", "picture", "phone_number", "email", "email_verified", "avatarUrl", "loginEmail", "mobile", "nick", "openId", "stateCode", "unionId", "visitor"];
     public string Documentation => "https://open.dingtalk.com/document/orgapp/obtain-identity-credentials";
 
     public string BuildAuthorizationUrl(AuthorizationRequest request)
@@ -25,7 +26,7 @@ public sealed class DingTalkOAuthProvider(HttpClient client) : IOAuthProvider
             ["redirect_uri"] = request.RedirectUri,
             ["response_type"] = "code",
             ["prompt"] = "consent",
-            ["scope"] = string.IsNullOrWhiteSpace(request.Scope) ? "openid" : request.Scope,
+            ["scope"] = organization is not null ? "openid corpid" : string.IsNullOrWhiteSpace(request.Scope) ? "openid" : request.Scope,
             ["state"] = request.State
         });
     }
@@ -41,6 +42,10 @@ public sealed class DingTalkOAuthProvider(HttpClient client) : IOAuthProvider
         }, cancellationToken);
         using var document = await ReadResponseAsync(response, "invalid_grant", cancellationToken);
         var data = document.RootElement;
+        if (organization is not null && String(data, "corpId") != organization.CorpId)
+        {
+            throw new OAuthProviderException("invalid_grant", "DingTalk authorization did not select the configured organization.");
+        }
         var accessToken = String(data, "accessToken");
         if (string.IsNullOrWhiteSpace(accessToken)) throw new JsonException("Missing DingTalk access token.");
         if (!data.TryGetProperty("expireIn", out var expiry) || expiry.ValueKind != JsonValueKind.Number ||
@@ -49,22 +54,45 @@ public sealed class DingTalkOAuthProvider(HttpClient client) : IOAuthProvider
         return new ProviderToken(accessToken, seconds, String(data, "refreshToken"));
     }
 
+    public async Task<object> GetAuthorizationProfileAsync(ProviderToken token, TokenRequest request, CancellationToken cancellationToken)
+    {
+        using var document = await ReadUserAsync(token.AccessToken, cancellationToken);
+        var user = document.RootElement;
+        var email = organization is null ? null :
+            await organization.ReadEmailAsync(request, Subject(user), cancellationToken);
+        return MapUser(user, email);
+    }
+
     public async Task<object> GetUserInfoAsync(string accessToken, CancellationToken cancellationToken)
+    {
+        using var document = await ReadUserAsync(accessToken, cancellationToken);
+        return MapUser(document.RootElement, null);
+    }
+
+    private async Task<JsonDocument> ReadUserAsync(string accessToken, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, UserInfoEndpoint);
         request.Headers.Add("x-acs-dingtalk-access-token", accessToken);
         using var response = await client.SendAsync(request, cancellationToken);
-        using var document = await ReadResponseAsync(response, "invalid_token", cancellationToken);
-        var user = document.RootElement;
-        var subject = String(user, "unionId");
-        if (string.IsNullOrWhiteSpace(subject)) throw new JsonException("Missing DingTalk subject.");
+        return await ReadResponseAsync(response, "invalid_token", cancellationToken);
+    }
+
+    private static string Subject(JsonElement user) => String(user, "unionId") is { Length: > 0 } value && !string.IsNullOrWhiteSpace(value)
+        ? value : throw new JsonException("Missing DingTalk subject.");
+
+    private object MapUser(JsonElement user, DingTalkOrganization.DirectoryEmail? email)
+    {
+        var subject = Subject(user);
         return new
         {
             sub = subject,
             name = OAuthRequestHelpers.FirstNonEmpty(String(user, "nick"), subject),
             picture = String(user, "avatarUrl"),
             phone_number = String(user, "mobile"),
-            email = OAuthRequestHelpers.FirstNonEmpty(String(user, "email"), String(user, "loginEmail")),
+            email = organization is null ? OAuthRequestHelpers.FirstNonEmpty(String(user, "email"), String(user, "loginEmail"))
+                : email is { Verified: true } ? email.Address : null,
+            email_verified = email is { Verified: true } ? true : (bool?)null,
+            dingtalk_directory_email = email is { Verified: false } ? email.Address : null,
             avatarUrl = String(user, "avatarUrl"),
             loginEmail = String(user, "loginEmail"),
             mobile = String(user, "mobile"),
